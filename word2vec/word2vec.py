@@ -26,120 +26,130 @@ V = 3
 K = 5
 
 
-class NoiseContrastiveEmbedder(object):
+def noise_contrast(signal, noise, scale=True):
+	'''
+	Takes the theano symbolic variables `signal` and `noise`, whose
+	elements are interpreted as storing probabilities, and creates a loss
+	function which penalizes large probabilities in noise and small 
+	probabilities in signal.  
+	
+	`signal` and `noise` can have any shape.  If they have more than one
+	dimension, their contributions will be summed over all dimensions.
+
+	If `scale` is true, then scale the loss function by the size of the
+	signal tensor --- i.e. divide by the signal batch size.  This makes
+	the scale of the loss function invariant to changes in batch size
+	'''
+
+	signal_score = T.log(signal).sum()
+	noise_score = T.log(1-noise).sum()
+	objective = signal_score + noise_score
+	loss = -objective
+
+	loss = loss / signal.shape[0]
+	
+	return loss
+
+
+class Word2Vec(object):
 
 	def __init__(
 		self,
-		query_input,
-		context_input,
-		noise_input,
-		context_shape=(None,None),
-		noise_shape=(None,None),
+		positive_input,
+		negative_input,
+		batch_size,
 		vocabulary_size=100000,
 		num_embedding_dimensions=500,
 		word_embedding_init=Normal(), 
-		context_embedding_init=Normal()
+		context_embedding_init=Normal(),
+		learning_rate=0.1,
+		momentum=0.9,
+		verbose=True
 	):
 
-		# Keep a reference to the symbolic inputs
-		self.query_input = query_input
-		self.context_input = context_input
-		self.noise_input = noise_input
+		# Register all the arguments for easy inspection and access
+		self.positive_input = positive_input
+		self.negative_input = negative_input
+		self.batch_size = batch_size
+		self.vocabulary_size = vocabulary_size
+		self.num_embedding_dimensions = num_embedding_dimensions
+		self.word_embedding_init = word_embedding_init
+		self.context_embedding_init = context_embedding_init
+		self.learning_rate = learning_rate
+		self.momentum = momentum
+		self.verbose = verbose
 
-		# Make a word embedder to process signal context (we'll make one to
-		# process noise context below)
-		self.signal_architecture = WordEmbedder(
-			query_input,
-			context_input,
-			context_shape=context_shape,
+		# The input that we pass through the Word2VecEmbedder will be
+		# the concatenation of the signal and noise examples
+		embedder_input = T.concatenate([positive_input, negative_input])
+
+		# Make a Word2VecEmbedder
+		self.embedder = Word2VecEmbedder(
+			embedder_input,
+			batch_size,
 			vocabulary_size=vocabulary_size,
 			num_embedding_dimensions=num_embedding_dimensions,
 			word_embedding_init=word_embedding_init,
 			context_embedding_init=context_embedding_init
 		)
 
-		# Get shorter names for the embedding parameters.  We'll share
-		# the parameters with the word embedder for noise context.
-		query_embed_params, context_embed_params = (
-			self.signal_architecture.get_all_params()
+		# Split the output back up into its positive and negative parts
+		embedder_output = self.embedder.get_output()
+		self.positive_output = embedder_output[:positive_input.shape[0]]
+		self.negative_output = embedder_output[positive_input.shape[0]:]
+
+		# Construct the loss based on Noise Contrastive Estimation
+		self.loss = noise_contrast(
+			self.positive_output, self.negative_output
 		)
 
-		# Make a workd embedder to process noise context (pass in embedding
-		# parameters from the signal context embedder.
-		self.noise_architecture = WordEmbedder(
-			query_input, 
-			noise_input,
-			context_shape=noise_shape,
-			vocabulary_size=vocabulary_size,
-			num_embedding_dimensions=num_embedding_dimensions,
-			word_embedding_init=query_embed_params,
-			context_embedding_init=context_embed_params
+		# Get the parameter updates using stochastic gradient descent with
+		# nesterov momentum.  TODO: make the updates configurable
+		self.updates = lasagne.updates.nesterov_momentum(
+			self.loss,
+			self.embedder.get_params(), 
+			learning_rate,
+			momentum
 		)
 
-
-	def get_signal_output(self):
-		return self.signal_architecture.get_output()
-
-
-	def get_noise_output(self):
-		return self.noise_architecture.get_output()
+		# That's everything we need to compile a training function.
+		# The training fuction will be defined separately, and will 
+		# wrap the compiled theano function, which will be compiled when
+		# it is first called.
 
 
-	def get_signal_activation(self):
-		activation = 1 / (1 + T.exp(-self.get_signal_output()))
-		return activation
+	def get_params(self):
+		'''returns the embedding parameters, of the underlying embedder'''
+		return self.embedder.get_params()
 
 
-	def get_noise_activation(self):
-		activation = 1 / (1 + T.exp(self.get_noise_output()))
-		return activation
+	def train(self, positive_input, negative_input):
+		'''Runs the compiled theano training function.  If the training
+		function hasn't been compiled yet, it compiles it.
+		'''
+		if not hasattr(self, 'train_'):
+			if self.verbose:
+				print 'Compiling training function on first call.'
+			self.train_ = function(
+				inputs=[self.positive_input, self.negative_input], 
+				outputs=self.loss,
+				updates=self.updates
+			)
+
+		return self.train_(positive_input, negative_input)
 
 
-	def get_signal_score(self):
-		# Compute sigmoid activiation for each word-context dot product
-		# then sum for different contexts and average for each word
-		activation = self.get_signal_activation()
-		log_prob = T.log2(activation)
-		return log_prob.sum(axis=1).mean()
+
+def sigmoid(tensor_var):
+	return 1/(1+T.exp(-tensor_var))
 
 
-	def get_noise_score(self):
-		# Similarly for noise, but take signmoid of negative dot product
-		activation = self.get_noise_activation()
-		log_prob = T.log2(activation)
-		return log_prob.sum(axis=1).mean()
-
-
-	def get_loss(self):
-		# Total up the score.  Seeking max, so take negative as loss.
-		total_score = self.get_signal_score() + self.get_noise_score()
-
-		loss = -total_score
-
-		return loss
-
-
-	def get_all_params(self):
-		return self.signal_architecture.get_all_params()
-
-
-	def embed_context(self, words_to_embed):
-		# Expose the context embedding function of the signal architecture
-		return self.signal_architecture.embed_context(words_to_embed)
-
-
-	def embed_words(self, words_to_embed):
-		# Expose the word embedding function of the signal architecture
-		return self.signal_architecture.embed_words(words_to_embed)
-
-
-class WordEmbedder(object):
+class Word2VecEmbedder(object):
 
 	def __init__(
 		self,
-		query_input,
-		context_input,
-		context_shape=(None, None),	# (num_examples, num_contexts_per_word)
+		input_var,
+		batch_size,
 		vocabulary_size=100000,
 		num_embedding_dimensions=500,
 		word_embedding_init=Normal(),
@@ -147,42 +157,29 @@ class WordEmbedder(object):
 		dropout=0.
 	):
 
-		try:
-			num_examples, num_contexts_per_word = context_shape
-		except ValueError:
-			print context_shape
+		self.input_var = input_var
 
-		self.query_input = query_input
+		# Every row (example) in a batch consists of a query word and a 
+		# context word.  We need to learn separate embeddings for each,
+		# and so, the input will be separated into all queries and all 
+		# contexts, and handled separately.
+		self.query_input = input_var[:,0]
+		self.context_input = input_var[:,1]
 
-		# TODO: this should be able to be None
-		self.context_input = context_input
-
-		# Make an input layer for query words
+		# Make separate input layers for query and context words
 		self.l_in_query = lasagne.layers.InputLayer(
-			shape=(num_examples,), input_var=query_input
+			shape=(batch_size,), input_var=self.query_input
+		)
+		self.l_in_context = lasagne.layers.InputLayer(
+			shape=(batch_size,), input_var=self.context_input
 		)
 
-		# Make an embedding layer for context words
+		# Make separate embedding layers for query and context words
 		self.l_embed_query = lasagne.layers.EmbeddingLayer(
 			incoming=self.l_in_query,
 			input_size=vocabulary_size, 
 			output_size=num_embedding_dimensions, 
 			W=word_embedding_init
-		)
-		if dropout > 0:
-			print 'using dropout'
-			self.l_drop_query = lasagne.layers.DropoutLayer(
-				self.l_embed_query, p=dropout
-			)
-			self.query_embedding = get_output(self.l_drop_query)
-		else:
-			self.query_embedding = get_output(self.l_embed_query)
-
-		# Make an input layer for context words.  It's a matrix because
-		# we expect multiple context words per query word.
-		self.l_in_context = lasagne.layers.InputLayer(
-			shape=(num_examples,num_contexts_per_word), 
-			input_var=context_input
 		)
 		self.l_embed_context = lasagne.layers.EmbeddingLayer(
 			incoming=self.l_in_context,
@@ -191,103 +188,40 @@ class WordEmbedder(object):
 			W=context_embedding_init
 		)
 
-		if dropout > 0:
-			print 'using dropout'
-			self.l_drop_context = lasagne.layers.DropoutLayer(
-				self.l_embed_context, p=dropout
-			)
-			self.context_embedding = get_output(self.l_drop_context)
-		else:
-			self.context_embedding = lasagne.layers.get_output(
-				self.l_embed_context)
+		# Obtain the embedded query words and context words
+		self.query_embedding = get_output(self.l_embed_query)
+		self.context_embedding = get_output(self.l_embed_context)
 
-		# Take the dot product of each query embedding with its 
-		# corresponding Noise and context embeddings
-		self.dots, scan_updates = scan(
-			fn=lambda P, Q: T.dot(P, Q.dimshuffle(1, 0)),
-			outputs_info=None,
-			sequences=[self.query_embedding, self.context_embedding]
-		)
+		# We now combine the query and context embeddings, taking the 
+		# dot product between corresponding queries and contexts.  
+		# We can express this as matrix multiplication: if we multiply
+		# the query embeddings (a matrix) with the transposed context
+		# embeddings (also a matrix), the elements of the result give
+		# the dot prodcuts of all context embeddings with all query
+		# embeddings.  We only want the dot products for the queries
+		# and contexts that came from the same example (not the dot products
+		# formed by all pairs), which we can obtain by selecting the 
+		# diagonal from the result.  Hopefully theano's optimizations are
+		# smart enough to only calculate the needed dot products.
+		self.match_scores = T.dot(
+			self.query_embedding, self.context_embedding.T
+		).diagonal()
 
-	def get_all_params(self):
+		# Finally apply the sigmoid activation function
+		self.output = sigmoid(self.match_scores)
+
+
+	def get_params(self):
+		'''returns a list of the trainable parameters, that is, the query
+		and context embeddings.  (similar to layer.get_all_params.)'''
 		return (
 			get_all_params(self.l_embed_query, trainable=True) +
 			get_all_params(self.l_embed_context, trainable=True)
 		)
 
+
 	def get_output(self):
-		return self.dots
-
-	def get_word_embedding(self):
-		return self.query_embedding
-
-	def get_context_embedding(self):
-		return self.context_embedding
-
-	def get_embedding_layer(self):
-		return self.l_embed_query
-
-	#TODO
-	def embed_context(self, words_to_embed):
-		# This function expects words_to_embed to have the shape
-		# equal to context_shape passed to the WordEmbedder constructor
-		if not hasattr(self, 'do_embed_context'):
-			self.do_embed_context = function(
-				[self.context_input], self.context_embedding
-			)
-
-		return self.do_embed_context(words_to_embed)
-
-	def embed_words(self, words_to_embed):
-		# This function expects words_to_embed to be a vector of integers,
-		# each being the vocabulary index for a word to be embedded
-		if not hasattr(self, 'do_embed_word'):
-			self.do_embed_word = function(
-				[self.query_input], self.query_embedding
-			)
-
-		return self.do_embed_word(words_to_embed)
-
-
-
-def main():
-
-	query_input = T.ivector('query_input')
-	context_input = T.imatrix('context_input')
-
-	word_embedding_init = (
-		np.arange(3*5).reshape((3,5)).astype('float32')
-	)
-	context_embedding_init = (
-		np.array([[i, i, i, i, i] for i in range(3)]).astype('float32')
-	)
-
-
-	query_embedding, context_embedding, query_context_dots = build_network(
-		query_input,
-		context_input,
-		context_shape=(None, K+1),	# (num_examples, num_contexts_per_word)
-		vocabulary_size=V,
-		num_embedding_dimensions=D,
-		word_embedding_init=word_embedding_init,
-		context_embedding_init=context_embedding_init
-	)
-
-
-	noise_input = T.imatrix('noise_input')
-	query_embedding, noise_embedding, query_noise_dots = build_network(
-		query_input, context_input
-	)
-
-	embed_queries = function([query_input], query_embedding)
-	embed_contexts = function([context_input], context_embedding)
-	forward_pass = function([query_input, context_input], dots)
-
-	
-
-	#test_query_input = np.array([0,2]).astype('int32')
-	#test_context_input = np.array(
-	#	[ [(i+j)%V for j in range(6)] for i in range(2) ]
-	#).astype('int32')
+		'''returns the symbolic output.  (similar to layer.get_output.)'''
+		return self.output
 
 
