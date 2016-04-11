@@ -1,29 +1,14 @@
 import os
 import sys
+import numpy as np
 import theano
-import time
 import theano.tensor as T
 from theano import function, scan
 import lasagne
-import numpy as np
-from lasagne_mnist import build_mlp
-from mnist_iterator import MnistIterator
 from lasagne.layers import (
 	get_output, InputLayer, EmbeddingLayer, get_all_params
 )
 from lasagne.init import Normal
-
-# Number of noise context words to true context words
-K = 15
-# Size of vocabulary for embedding
-V = 100000
-# Embedding dimensionality
-D = 500
-
-# Debug
-D = 5
-V = 3
-K = 5
 
 
 def noise_contrast(signal, noise, scale=True):
