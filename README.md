@@ -1,5 +1,5 @@
 Theano-word2vec
-~~~
+---------------
 
 To start word2vec, import and instantiate a Word2Vec object:
 
