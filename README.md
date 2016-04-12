@@ -1,7 +1,7 @@
 Theano-word2vec
 ---------------
 
-To start word2vec, import and instantiate a Word2Vec object:
+To get started with word2vec, import and instantiate a `Word2Vec` object:
 
     >>> from word2vec import Word2Vec
     >>> word2vec = Word2Vec()
