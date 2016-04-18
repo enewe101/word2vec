@@ -2,4 +2,6 @@
 *.swo
 *.swp
 *.egg-info
+assemble_test_files.py
 dist
+test-data
