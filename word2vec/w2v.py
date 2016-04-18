@@ -335,12 +335,18 @@ class Word2Vec(object):
 
 
 def row_dot(matrixA, matrixB):
-	C, updates = theano.scan(
-		fn=lambda x,y: T.dot(x,y),
-		outputs_info=None,
-		sequences=[matrixA, matrixB]
-	)
+	C = (matrixA * matrixB).sum(axis=1)
 	return C
+
+
+#def row_dot(matrixA, matrixB):
+#	C, updates = theano.scan(
+#		fn=lambda x,y: T.dot(x,y),
+#		outputs_info=None,
+#		sequences=[matrixA, matrixB]
+#	)
+#	return C
+
 
 def sigmoid(tensor_var):
 	return 1/(1+T.exp(-tensor_var))

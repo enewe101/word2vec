@@ -27,7 +27,63 @@ class CorpusReader(object):
 		self.files = files
 		self.directories = directories
 		self.skip = skip
-		self.parse = default_parse
+		self.parse = parse
+
+
+	def read_no_q(
+		self
+	):
+		'''
+		Iterates through the files and directories given in the constructor
+		and parses out a list of sentences, where sentences are encoded
+		as a list of tokens (i.e. a list of lists of tokens).
+		Parsing the files is deligated to a parser function, which can
+		be customized.
+
+		Lines are loaded into a queue so that reading can be done in the
+		background.
+		'''
+
+		# Process all the files listed in files, unles they match an
+		# entry in skip
+		#print 'starting reading'
+		if self.files is not None:
+			for filename in self.files:
+				filename = os.path.abspath(filename)
+
+				# Skip files if they match a regex in skip
+				if any([s.search(filename) for s in self.skip]):
+					continue
+
+				print 'processing', filename
+				for line in self.parse(filename):
+					yield(line)
+
+		# Process all the files listed in each directory, unless they
+		# match an entry in skip
+		if self.directories is not None:
+			for dirname in self.directories:
+				dirname = os.path.abspath(dirname)
+
+				# Skip directories if they match a regex in skip
+				if any([s.search(dirname) for s in self.skip]):
+					continue
+
+				for filename in os.listdir(dirname):
+					filename = os.path.join(dirname, filename)
+
+					# Only process the *files* under the given directories
+					if not os.path.isfile(filename):
+						continue
+
+					# Skip files if they match a regex in skip
+					if any([s.search(filename) for s in self.skip]):
+						continue
+
+					print 'processing', filename
+					for line in self.parse(filename):
+						yield line
+
 
 
 	def read(self):
@@ -85,7 +141,7 @@ class CorpusReader(object):
 				if any([s.search(filename) for s in skip]):
 					continue
 
-				for line in default_parse(filename):
+				for line in self.parse(filename):
 					queue.put(line)
 
 		# Process all the files listed in each directory, unless they
@@ -109,7 +165,7 @@ class CorpusReader(object):
 					if any([s.search(filename) for s in skip]):
 						continue
 
-					for line in default_parse(filename):
+					for line in self.parse(filename):
 						queue.put(line)
 
 		# Notify the parent process that you're done

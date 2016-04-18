@@ -1,6 +1,6 @@
 from multiprocessing import Queue, Process, Pipe
 from Queue import Empty
-from corpus_reader import CorpusReader
+from corpus_reader import CorpusReader, default_parse
 from unigram import Unigram, MultinomialSampler
 from dictionary import Dictionary
 import numpy as np
@@ -23,11 +23,14 @@ class MinibatchGenerator(object):
 		noise_ratio=15,
 		kernel=[1,2,3,4,5,5,4,3,2,1],
 		t = 1.0e-5,
-		batch_size = 1000
+		batch_size = 1000,
+		parse=default_parse
 	):
 
 		# Get a corpus reader
-		self.corpus_reader = CorpusReader(files, directories, skip)
+		self.corpus_reader = CorpusReader(
+			files=files, directories=directories, skip=skip, parse=parse
+		)
 
 		# Load the dictionary, if supplied
 		if dictionary is not None:
@@ -106,13 +109,40 @@ class MinibatchGenerator(object):
 		self.unigram.save(filename)
 
 
-	def prepare(self):
+	def check_access(self, savedir):
+
+		savedir = os.path.abspath(savedir)
+		path, dirname = os.path.split(savedir)
+
+		# Make sure that the directory we want exists (make it if not)
+		if not os.path.isdir(path):
+			raise IOError('%s is not a directory or does not exist' % path)
+		if not os.path.exists(savedir):
+			os.mkdir(os.path)
+		elif os.path.isfile(savedir):
+			raise IOError('%s is a file. % savedir')
+
+		# Make sure we can write to the file
+		f = open(os.path.join(savedir, '.__test-w2v-access'), 'w')
+		f.write('test')
+		f.close
+		os.remove(os.path.join(savedir, '.__test-w2v-access'))
+
+
+	def prepare(self, savedir=None):
 		# Before any minibatches can be generated, we need to run over
 		# the corpus to determine the unigram distribution and create
 		# a dictionary mapping all words in the corpus vocabulary to int's.
-		for line in self.corpus_reader.read():
+
+		if savedir is not None:
+			self.check_access(savedir)
+
+		for line in self.corpus_reader.read_no_q():
 			token_ids = self.dictionary.update(line)
 			self.unigram.update(token_ids)
+
+		if savedir is not None:
+			self.save(savedir)
 
 
 	def __iter__(self):
@@ -172,6 +202,67 @@ class MinibatchGenerator(object):
 		return signal_batch, noise_batch
 
 
+	def generate(self):
+
+		chooser = TokenChooser(K=len(self.kernel)/2, kernel=self.kernel)
+		signal_batch, noise_batch = self.init_batch()
+
+		# i keeps track of position in the signal batch
+		i = -1
+		for line in self.corpus_reader.read_no_q():
+
+			# Isolated tokens (e.g. one-word sentences) have no context
+			# and can't be used for training.
+			if len(line) < 2:
+				continue
+
+			token_ids = self.dictionary.get_ids(line)
+
+			# We'll now generate generate signal examples and noise
+			# examples for training
+			for query_token_pos, query_token_id in enumerate(token_ids):
+
+				# Possibly discard the token
+				if self.do_discard(query_token_id):
+					continue
+
+				# Increment position within the batch
+				i += 1
+
+				# Sample a token from the context
+				context_token_pos = chooser.choose_token(
+					query_token_pos, len(token_ids)
+				)
+				context_token_id = token_ids[context_token_pos]
+				signal_batch[i, :] = [query_token_id, context_token_id]
+
+				# Sample tokens from the noise
+				noise_context_ids = self.unigram.sample((self.noise_ratio,))
+
+				# Figure out the position within the noise batch
+				j = i*self.noise_ratio
+
+				# block-assign the noise samples to the noise batch array
+				noise_batch[j:j+self.noise_ratio, :] = [
+					[query_token_id, noise_context_id]
+					for noise_context_id in noise_context_ids
+				]
+
+				# Once we've finished assembling a minibatch, enqueue it
+				# and start assemblin a new minibatch
+				if i == self.batch_size - 1:
+					yield (signal_batch, noise_batch)
+					signal_batch, noise_batch = self.init_batch()
+					i = -1
+
+		# Normally we'll have a partially filled minibatch after processing
+		# the corpus.  The elements in the batch that weren't overwritten
+		# contain UNK tokens, which act as padding.  Enqueue the partial
+		# minibatch.
+		if i >= 0:
+			yield (signal_batch, noise_batch)
+
+
 	def prepare_minibatches(self, minibatch_queue, send_pipe):
 
 		chooser = TokenChooser(K=len(self.kernel)/2, kernel=self.kernel)
@@ -179,7 +270,7 @@ class MinibatchGenerator(object):
 
 		# i keeps track of position in the signal batch
 		i = -1
-		for line in self.corpus_reader.read():
+		for line in self.corpus_reader.read_no_q():
 
 			# Isolated tokens (e.g. one-word sentences) have no context
 			# and can't be used for training.

@@ -511,6 +511,32 @@ class TestMultinomialSampler(TestCase):
 
 class TestCorpusReader(TestCase):
 
+	def test_read_large(self):
+		'''
+		test basic usage of CorpusReader's read function.  
+		CorpusReader.read() delegates actual I/O to a separate process,
+		here we simply make sure that it returns the same result as we 
+		would get by reading each line in the target file and tokenizing
+		on whitespace.
+		'''
+		
+		reader = CorpusReader(
+			files=['test-data/test-corpus/numbers-long.txt']
+		)
+
+		found_lines = []
+		for line in reader.read_no_q():
+			found_lines.append(line)
+
+		print len(found_lines)
+
+		#expected_lines = []
+		#for line in open('test-data/test-corpus/003.tsv'):
+		#	line = line.strip().split()
+		#	expected_lines.append(line)
+
+		#self.assertEqual(found_lines, expected_lines)
+
 	def test_read_basic(self):
 		'''
 		test basic usage of CorpusReader's read function.  
@@ -577,7 +603,8 @@ class TestCorpusReader(TestCase):
 				line = line.strip().split()
 				expected_lines.append(line)
 
-		self.assertEqual(found_lines, expected_lines)
+
+		self.assertItemsEqual(found_lines, expected_lines)
 
 
 class TestDictionary(TestCase):
@@ -886,11 +913,12 @@ class TestWord2VecOnCorpus(TestCase):
 		# Seed randomness to make the test reproducible
 		np.random.seed(1)
 
-		batch_size = 10
+		batch_size = 10000
 
+		#print 'making minibatch generator'
 		# Make a minibatch generator
 		minibatch_generator = MinibatchGenerator(
-			files=['test-data/test-corpus/numbers.txt'],
+			files=['test-data/test-corpus/numbers-long.txt'],
 			t=1, batch_size=batch_size
 		)
 
@@ -898,6 +926,7 @@ class TestWord2VecOnCorpus(TestCase):
 		minibatch_generator.prepare()
 		
 		# Make a Word2Vec object
+		#print 'making word2vec'
 		word2vec = Word2Vec(
 			batch_size=batch_size,
 			vocabulary_size=minibatch_generator.get_vocab_size(),
@@ -923,18 +952,22 @@ class TestWord2VecOnCorpus(TestCase):
 		)
 
 		# Train the word2vec over the corpus with 5 epochs
-		num_epochs=5
+		num_epochs=1
 		time_on_batching = 0
 		time_on_training = 0
+		#print 'starting training'
+		print 'print freq:', int(round(31488 * 3/float(batch_size)))
 		for epoch in range(num_epochs):
 
 			start_batch = time.time()
 			for i, (signal_batch, noise_batch) in enumerate(
-				minibatch_generator
+				minibatch_generator.generate()
 			):
 
-				#if i % int(round(3936 * 3/float(20*batch_size)))==0:
-				#	print i * batch_size
+				if i % int(round(31488 * 3/float(5*batch_size)))==0:
+					#print i * batch_size
+					print 'training time:', time_on_training
+					print 'batching time:', time_on_batching
 
 				time_on_batching += time.time() - start_batch
 				start_train = time.time()
@@ -943,9 +976,9 @@ class TestWord2VecOnCorpus(TestCase):
 				start_batch = time.time()
 
 		total_time = time_on_training + time_on_batching
-		#print 'total training time:', time_on_training
-		#print 'total batching time:', time_on_batching
-		#print '% time spent batching:', time_on_batching * 100 / total_time
+		print 'total training time:', time_on_training
+		print 'total batching time:', time_on_batching
+		print '% time spent batching:', time_on_batching * 100 / total_time
 
 		W, C = word2vec.get_param_values()
 		dots = usigma(np.dot(W,C.T))
@@ -1099,8 +1132,6 @@ class TestWord2Vec(TestCase):
 			[8,9],
 			[9,8]
 		]).astype('int32')
-
-
 		
 		num_replicates = 5
 		num_epochs = 3000
