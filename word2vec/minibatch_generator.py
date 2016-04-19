@@ -24,12 +24,14 @@ class MinibatchGenerator(object):
 		kernel=[1,2,3,4,5,5,4,3,2,1],
 		t = 1.0e-5,
 		batch_size = 1000,
-		parse=default_parse
+		parse=default_parse,
+		verbose=True
 	):
 
 		# Get a corpus reader
 		self.corpus_reader = CorpusReader(
-			files=files, directories=directories, skip=skip, parse=parse
+			files=files, directories=directories, skip=skip, parse=parse,
+			verbose=verbose
 		)
 
 		# Load the dictionary, if supplied
@@ -143,7 +145,7 @@ class MinibatchGenerator(object):
 
 		if savedir is not None:
 			self.save(savedir)
-
+  
 
 	def __iter__(self):
 

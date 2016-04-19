@@ -22,12 +22,14 @@ class CorpusReader(object):
 		files=[],
 		directories=[],
 		skip=[],
-		parse=default_parse
+		parse=default_parse,
+		verbose=True
 	):
 		self.files = files
 		self.directories = directories
 		self.skip = skip
 		self.parse = parse
+		self.verbose = verbose
 
 
 	def read_no_q(
@@ -55,7 +57,8 @@ class CorpusReader(object):
 				if any([s.search(filename) for s in self.skip]):
 					continue
 
-				print 'processing', filename
+				if self.verbose:
+					print 'processing', filename
 				for line in self.parse(filename):
 					yield(line)
 
@@ -80,7 +83,8 @@ class CorpusReader(object):
 					if any([s.search(filename) for s in self.skip]):
 						continue
 
-					print 'processing', filename
+					if self.verbose:
+						print 'processing', filename
 					for line in self.parse(filename):
 						yield line
 

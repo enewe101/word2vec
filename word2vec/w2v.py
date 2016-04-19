@@ -21,6 +21,7 @@ def word2vec(
 		# ^^^ At a minimum, either files or directories should be specified
 		# vvv All other arguments are strictly optional
 
+		savedir=None,
 		num_epochs=5,
 		skip=[],
 		dictionary=None,
@@ -34,7 +35,7 @@ def word2vec(
 		context_embedding_init=Normal(),
 		learning_rate=0.1,
 		momentum=0.9,
-		verbose=True
+		verbose=True,
 	):
 	'''
 	Helper function that handles all concerns involved in training
@@ -47,43 +48,65 @@ def word2vec(
 	point for you.
 	'''
 
-	# Make a minibatch generator, using the options supplied as arguments
+	# Define the input theano variables
+	signal_input = T.imatrix('query_input')
+	noise_input = T.imatrix('noise_input')
+
+	# Make a NoiseContraster, and get the combined input
+	noise_contraster = NoiseContraster(signal_input, noise_input)
+	combined_input = noise_contraster.get_combined_input()
+
+	# Make a Word2VecEmbedder object, feed it the combined input
+	word2vec_embedder = Word2VecEmbedder(
+		combined_input,
+		batch_size,
+		vocab_size,
+		num_embedding_dimensions
+	)
+
+	# Get the params and output from the word2vec embedder, feed that
+	# back to the noise_contraster to get the training function
+	combined_output = word2vec_embedder.get_output()
+	params = word2vec_embedder.get_params()
+	train = noise_contraster.get_train_func(combined_output, params)
+
+	# Make a MinibatchGenerator
 	minibatch_generator = MinibatchGenerator(
-		files=files, directories=directories, skip=skip,
-		dictionary=dictionary, unigram=unigram, noise_ratio=noise_ratio,
-		kernel=kernel, t=t, batch_size=batch_size
-	)
-
-	# Read through the corpus once to obtain the unigram probabilities
-	# If a unigram distribution was supplied as an argument, this step
-	# isn't necessary
-	if unigram is None:
-		minibatch_generator.prepare()
-
-	# Make a word2vec object, using the options supplied as arguments.
-	# The vocabulary size is known by the minibatch generator, which is
-	# the primary reason that we need prepare() the minibatch generator
-	# before making the Word2Vec object
-	word2vec = Word2Vec(
+		files=files,
+		directories=directories,
+		skip=skip,
+		dictionary=dictionary,
+		unigram=unigram,
+		noise_ratio=noise_ratio,
+		kernel=kernel,
+		t=t,
 		batch_size=batch_size,
-		vocabulary_size=minibatch_generator.get_vocab_size(),
-		num_embedding_dimensions=num_embedding_dimensions,
-		word_embedding_init=word_embedding_init,
-		context_embedding_init=context_embedding_init,
-		learning_rate=learning_rate,
-		momentum=momentum,
-		verbose=verbose
+		parse=parse
 	)
 
-	# Train word2vec for as many epochs as desired
-	for epoch in range(num_epochs):
-		for signal_batch, nose_batch in minibatch_generator:
-			word2vec.train(signal_batch, noise_batch)
+	# Prpare the minibatch generator (this produces the unigram stats)
+	minibatch_generator.prepare(savedir=savedir)
 
-	# We return both the the word2vec and minibatch_generator.  
-	# The generator knows the unigram distribution, which the user might
-	# want to save or access
-	return word2vec, minibatch_generator
+	# Iterate over the corpus, training the embeddings
+	for epoch in range(num_epochs):
+		print 'starting epoch %d' % epoch
+		for signal_batch, noise_batch in minibatch_generator.generate():
+			loss = train(signal_batch, noise_batch)
+
+	# Save the model (the embeddings) if savedir was provided
+	if savedir is not None:
+		embedings_filename = os.path.join(savedir, 'embeddings.npz')
+		word2vec_embedder.save(embeddings_filename)
+
+	# Return the trained word2vec_embedder
+	return word2vec_embedder
+
+
+
+
+
+
+
 
 
 def noise_contrast(signal, noise, scale=True):
@@ -109,6 +132,56 @@ def noise_contrast(signal, noise, scale=True):
 	loss = loss / signal.shape[0]
 	
 	return loss
+
+
+
+class NoiseContraster(object):
+
+	def __init__(
+		self,
+		signal_input,
+		noise_input,
+		learning_rate=0.1,
+		momentum=0.9
+	):
+		self.signal_input = signal_input
+		self.noise_input = noise_input
+		self.learning_rate = learning_rate
+		self.momentum=momentum
+
+		self.combined = T.concatenate([
+			self.signal_input, self.noise_input
+		])
+
+	def get_combined_input(self):
+		return self.combined
+
+	def get_train_func(self, output, params):
+
+		# Split the output based on the size of the individual input streams
+		self.signal_output = output[:self.signal_input.shape[0]]
+		self.noise_output = output[self.signal_input.shape[0]:]
+
+		# Construct the loss based on Noise Contrastive Estimation
+		self.loss = noise_contrast(self.signal_output, self.noise_output)
+
+		# Get the parameter updates using stochastic gradient descent with
+		# nesterov momentum.  TODO: make the updates configurable
+		self.updates = lasagne.updates.nesterov_momentum(
+			self.loss,
+			params,
+			self.learning_rate,
+			self.momentum
+		)
+
+		self.train = function(
+			inputs=[self.signal_input, self.noise_input], 
+			outputs=self.loss,
+			updates=self.updates
+		)
+
+		return self.train
+
 
 
 class Word2Vec(object):
@@ -155,6 +228,7 @@ class Word2Vec(object):
 
 		# Split the output back up into its positive and negative parts
 		embedder_output = self.embedder.get_output()
+
 		self.positive_output = embedder_output[
 			:self.positive_input.shape[0]
 		]
@@ -312,9 +386,8 @@ class Word2Vec(object):
 		query_context pairs contained in negative_input.  Both are expected
 		to be numpy int32-type arrays, with shape (batch_size, 2), each
 		example is a row with two elements: the query-word and the
-		context-word, coded as integers.  batch_size can be anything, and
-		need not be the same for the positive_input and negative_input.
-
+		context-word, coded as integers.
+  
 		If the theano training function hasn't been compiled yet (which
 		is true the first time this is called, it compiles it.
 		'''

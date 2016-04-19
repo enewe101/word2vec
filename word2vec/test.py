@@ -14,7 +14,7 @@ import lasagne
 import numpy as np
 from lasagne.layers import get_output, InputLayer, EmbeddingLayer
 from lasagne.init import Normal
-from w2v import Word2VecEmbedder, Word2Vec, noise_contrast
+from w2v import Word2VecEmbedder, Word2Vec, noise_contrast, NoiseContraster
 from minibatch_generator import MinibatchGenerator, TokenChooser
 from corpus_reader import CorpusReader
 import t4k
@@ -521,14 +521,13 @@ class TestCorpusReader(TestCase):
 		'''
 		
 		reader = CorpusReader(
-			files=['test-data/test-corpus/numbers-long.txt']
+			files=['test-data/test-corpus/numbers-long.txt'],
+			verbose=False
 		)
 
 		found_lines = []
 		for line in reader.read_no_q():
 			found_lines.append(line)
-
-		print len(found_lines)
 
 		#expected_lines = []
 		#for line in open('test-data/test-corpus/003.tsv'):
@@ -546,7 +545,9 @@ class TestCorpusReader(TestCase):
 		on whitespace.
 		'''
 		
-		reader = CorpusReader(files=['test-data/test-corpus/003.tsv'])
+		reader = CorpusReader(
+			files=['test-data/test-corpus/003.tsv'], verbose=False
+		)
 
 		found_lines = []
 		for line in reader.read():
@@ -581,7 +582,8 @@ class TestCorpusReader(TestCase):
 		directories = ['test-data/test-corpus/subdir1']
 		skip = [re.compile('00[23].tsv')]
 		reader = CorpusReader(
-			files=files, directories=directories, skip=skip
+			files=files, directories=directories, skip=skip,
+			verbose=False
 		)
 
 		found_lines = []
@@ -767,7 +769,8 @@ class TestMinibatchGenerator(TestCase):
 			files=self.files,
 			t=self.t,
 			batch_size=self.batch_size,
-			noise_ratio=self.noise_ratio
+			noise_ratio=self.noise_ratio,
+			verbose=False
 		)
 
 		# Make another MinibatchGenerator, and pre-load this one with 
@@ -776,7 +779,8 @@ class TestMinibatchGenerator(TestCase):
 			files=self.files,
 			t=self.t,
 			batch_size=self.batch_size,
-			noise_ratio=self.noise_ratio
+			noise_ratio=self.noise_ratio,
+			verbose=False
 		)
 		self.preloaded_generator.load('test-data/minibatch-generator-test')
 
@@ -912,14 +916,16 @@ class TestWord2VecOnCorpus(TestCase):
 	def test_word2vec_on_corpus(self):
 		# Seed randomness to make the test reproducible
 		np.random.seed(1)
+		verbose = False
 
-		batch_size = 10000
+		batch_size = 10
 
 		#print 'making minibatch generator'
 		# Make a minibatch generator
 		minibatch_generator = MinibatchGenerator(
 			files=['test-data/test-corpus/numbers-long.txt'],
-			t=1, batch_size=batch_size
+			t=1, batch_size=batch_size,
+			verbose=False
 		)
 
 		# Prepare it
@@ -956,7 +962,6 @@ class TestWord2VecOnCorpus(TestCase):
 		time_on_batching = 0
 		time_on_training = 0
 		#print 'starting training'
-		print 'print freq:', int(round(31488 * 3/float(batch_size)))
 		for epoch in range(num_epochs):
 
 			start_batch = time.time()
@@ -966,8 +971,9 @@ class TestWord2VecOnCorpus(TestCase):
 
 				if i % int(round(31488 * 3/float(5*batch_size)))==0:
 					#print i * batch_size
-					print 'training time:', time_on_training
-					print 'batching time:', time_on_batching
+					if verbose:
+						print 'training time:', time_on_training
+						print 'batching time:', time_on_batching
 
 				time_on_batching += time.time() - start_batch
 				start_train = time.time()
@@ -976,9 +982,10 @@ class TestWord2VecOnCorpus(TestCase):
 				start_batch = time.time()
 
 		total_time = time_on_training + time_on_batching
-		print 'total training time:', time_on_training
-		print 'total batching time:', time_on_batching
-		print '% time spent batching:', time_on_batching * 100 / total_time
+		if verbose:
+			print 'total training time:', time_on_training
+			print 'total batching time:', time_on_batching
+			print '% time spent batching:', time_on_batching * 100 / total_time
 
 		W, C = word2vec.get_param_values()
 		dots = usigma(np.dot(W,C.T))
@@ -1094,6 +1101,126 @@ class TestWord2Vec(TestCase):
 
 		#print W
 		#print C
+
+
+	def test_noise_contrastive_learning(self):
+
+		# Seed randomness to make the test reproducible
+		np.random.seed(1)
+
+		# Predifine the size of batches and the embedding
+		batch_size = 160
+		vocab_size = 10
+		num_embedding_dimensions = 5
+
+		# Define the input theano variables
+		signal_input = T.imatrix('query_input')
+		noise_input = T.imatrix('noise_input')
+
+
+		# Make a NoiseContraster, and get the combined input
+		noise_contraster = NoiseContraster(signal_input, noise_input)
+		combined_input = noise_contraster.get_combined_input()
+
+		# Make a Word2VecEmbedder object, feed it the combined input
+		word2vec_embedder = Word2VecEmbedder(
+			combined_input,
+			batch_size,
+			vocab_size,
+			num_embedding_dimensions,
+		)
+
+		# Get the params and output from the word2vec embedder, feed that
+		# back to the noise_contraster to get the training function
+		combined_output = word2vec_embedder.get_output()
+		params = word2vec_embedder.get_params()
+		train = noise_contraster.get_train_func(combined_output, params)
+
+
+		# Make the positive input.  First component of each example is
+		# the query input, and second component is the context.  In the 
+		# final embeddings that are learned, dotting these rows and columns
+		# respectively from the query and context embedding matrices should
+		# give higher values than any other row-column dot products.
+		test_positive_input = np.array([
+			[0,2],
+			[1,3],
+			[2,0],
+			[3,1],
+			[4,6],
+			[5,7],
+			[6,4],
+			[7,5],
+			[8,9],
+			[9,8]
+		]).astype('int32')
+		
+		num_replicates = 5
+		num_epochs = 3000
+		embedding_products = []
+		W, C = word2vec_embedder.get_params()
+		start = time.time()
+		for rep in range(num_replicates):
+			W.set_value(np.random.normal(
+				0, 0.01, (vocab_size, num_embedding_dimensions)
+			).astype(dtype='float32'))
+			C.set_value(np.random.normal(
+				0, 0.01, (vocab_size, num_embedding_dimensions)
+			).astype('float32'))
+			#print '\t***'
+			for epoch in range(num_epochs):
+
+				# Sample new noise examples every epoch (this is better than
+				# fixing the noise once at the start).
+				# Provide 15 negative examples for each query word
+				test_negative_input = np.array([
+					[i / 10, random.randint(0,9)] for i in range(100)
+				]).astype('int32')
+
+				loss = train(
+					test_positive_input, test_negative_input
+				)
+				#print loss
+
+			embedding_product = np.dot(W.get_value(), C.get_value().T)
+			embedding_products.append(usigma(embedding_product))
+
+		mean_embedding_products = np.mean(embedding_products, axis=0)
+		#print np.round(mean_embedding_products, 2)
+
+		# We expect that the embeddings will allocate the most probability
+		# to the contexts that were provided for words in the toy data.
+		# We always provided a single context via batch_contexts 
+		# (e.g. context 2 provided for word 0), so we expect these contexts
+		# to be the maximum.
+		expected_max_prob_contexts = test_positive_input[:,1]
+		self.assertTrue(np.array_equal(
+			np.argmax(mean_embedding_products, axis=1),
+			expected_max_prob_contexts
+		))
+
+		# The dot product of a given word embedding and context embedding
+		# have an interpretation as the probability that that word and
+		# context derived from the toy data instead of the noise.
+		# See equation 3 in Noise-Contrastive Estimation of Unnormalized 
+		# Statistical Models, with Applications to Natural Image 
+		# StatisticsJournal of Machine Learning Research 13 (2012), 
+		# pp.307-361.
+		# That shows the probability should be around 0.5
+		# Since the actual values are stocastic, we check that the 
+		# average of repeated trials is within 0.25 - 0.75.
+		embedding_maxima = np.max(mean_embedding_products, axis=1)
+		self.assertTrue(all(
+			[x > 0.25 for x in embedding_maxima]
+		))
+		self.assertTrue(all(
+			[x < 0.75 for x in embedding_maxima]
+		))
+		#print 'average weight to correct pairs:', np.mean(
+		#	embedding_maxima
+		#)
+		#print 'elapsed time:', time.time() - start
+
 
 
 	def test_learning(self):
