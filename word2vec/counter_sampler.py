@@ -16,15 +16,26 @@ import numpy as np
 import gzip
 
 
-class UnigramException(Exception):
+class CounterSamplerException(Exception):
 	pass
 
 
-class Unigram(object):
+class CounterSampler(object):
 
-	def __init__(self):
-		self.counts = []
-		self.total = 0
+	def __init__(self, counts=[]):
+		'''
+		Create a CounterSampler.  Most common usage is to provide no
+		arguments, creating an empty CounterSampler, because CounterSampler 
+		provides functions to accumulate counts from observations.
+
+		counts:	list of counts.  The index of the count in the counts list
+			serves as the id for the outcome having that many counts.
+		'''
+
+		# Validation
+		if not all([isinstance(c, int) for c in counts]):
+			raise ValueError('Counts must be an iterable of integers')
+		self.counts = list(counts)
 		self.sampler_ready = False
 
 
@@ -41,22 +52,32 @@ class Unigram(object):
 		for idx in idxs:
 			self.add(idx)
 
-	def make_sampler(self):
+
+	def get_sampler(self):
 		if len(self.counts) < 1:
-			raise UnigramException(
+			raise CounterSamplerException(
 				'Cannot sample if no counts have been made'
 			)
-		self.sampler = MultinomialSampler(self.counts)
-		self.sampler_ready = True
+
+		if not self.sampler_ready:
+			self._sampler = MultinomialSampler(self.counts)
+
+		return self._sampler
+
+
+	def get_total_counts(self):
+		return self.get_sampler().total
+	def __len__(self):
+		return self.get_sampler().total
+
 
 	def sample(self, shape=()):
 		'''
-		Draw a sample according to the unigram probability
+		Draw a sample according to the counter_sampler probability
 		'''
-		if not self.sampler_ready:
-			self.make_sampler()
 
-		return self.sampler.sample(shape)
+		return self.get_sampler().sample(shape)
+
 
 	def save(self, filename):
 		if filename.endswith('.gz'):
@@ -67,6 +88,7 @@ class Unigram(object):
 		for c in self.counts:
 			f.write('%d\n' % c)
 
+
 	def load(self, filename):
 		if filename.endswith('.gz'):
 			f = gzip.open(filename)
@@ -76,14 +98,18 @@ class Unigram(object):
 		self.counts = [int(c) for c in f.readlines()]
 
 
+	def get_frequency(self, idx):
+		'''
+		Return the number of observations for outcome idx.
+		'''
+		return self.counts[idx]
+
 	def get_probability(self, token_id):
 		'''
 		Return the probability associated to token_id.
 		'''
 		# Delegate to the underlying MultinomialSampler
-		if not self.sampler_ready:
-			self.make_sampler()
-		return self.sampler.get_probability(token_id)
+		return self.get_sampler().get_probability(token_id)
 
 
 

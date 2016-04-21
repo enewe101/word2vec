@@ -1,8 +1,9 @@
 from multiprocessing import Queue, Process, Pipe
 from Queue import Empty
 from corpus_reader import CorpusReader, default_parse
-from unigram import Unigram, MultinomialSampler
-from dictionary import Dictionary
+from counter_sampler import MultinomialSampler
+from token_map import UNK
+from unigram_dictionary import UnigramDictionary
 import numpy as np
 import gzip
 import os
@@ -18,8 +19,7 @@ class MinibatchGenerator(object):
 		files=[],
 		directories=[],
 		skip=[],
-		dictionary=None,
-		unigram=None,
+		unigram_dictionary=None,
 		noise_ratio=15,
 		kernel=[1,2,3,4,5,5,4,3,2,1],
 		t = 1.0e-5,
@@ -34,17 +34,11 @@ class MinibatchGenerator(object):
 			verbose=verbose
 		)
 
-		# Load the dictionary, if supplied
-		if dictionary is not None:
-			self.dictionary = dictionary
+		# Load the unigram_dictionary
+		if unigram_dictionary is not None:
+			self.unigram_dictionary = unigram_dictionary
 		else:
-			self.dictionary = Dictionary()
-
-		# Load the unigram distribution, if supplied
-		if unigram is not None:
-			self.unigram = unigram
-		else:
-			self.unigram = Unigram()
+			self.unigram_dictionary = UnigramDictionary()
 
 		self.noise_ratio = noise_ratio
 		self.kernel = kernel
@@ -69,46 +63,27 @@ class MinibatchGenerator(object):
 		'''
 		Get the size of the vocabulary.  Only makes sense to call this
 		after MinibatchGenerator.prepare() has been called, or if an
-		existing (pre-filled) dictionary was loaded, since otherwise 
-		it would just return 0.  Delegate to the underlying dictionary.
+		existing (pre-filled) UnigramDictionary was loaded, since otherwise 
+		it would just return 0.
 		'''
-		return self.dictionary.get_vocab_size()
+		# Delegate to the underlying UnigramDictionary
+		return len(self.unigram_dictionary)
 
 
 	def load(self, directory):
 		'''
-		Load both the dictionary and unigram, assuming default filenames
-		(dictionary.gz and unigram.gz), by specifying their containing
-		directory
+		Load the unigram_dictionary whose files are stored in <directory>.
 		'''
-		self.dictionary.load(os.path.join(directory, 'dictionary.gz'))
-		self.unigram.load(os.path.join(directory, 'unigram.gz'))
+		# Delegate to the underlying UnigramDictionary
+		self.unigram_dictionary.load(directory)
 
 	
-	def load_dictionary(self, filename):
-		self.dictionary.load(filename)
-
-
-	def load_unigram(self, filename):
-		self.unigram.load(filename)
-
-
 	def save(self, directory):
 		'''
-		Save both the dictionary and unigram, using default filenames
-		(dictionary.gz and unigram.gz), by specifying only their containing
-		directory
+		Save the unigram_dictionary to <directory>.
 		'''
-		self.dictionary.save(os.path.join(directory, 'dictionary.gz'))
-		self.unigram.save(os.path.join(directory, 'unigram.gz'))
-
-
-	def save_dictionary(self, filename):
-		self.dictionary.save(filename)
-
-
-	def save_unigram(self, filename):
-		self.unigram.save(filename)
+		# Delegate to the underlying UnigramDictionary
+		self.unigram_dictionary.save(directory)
 
 
 	def check_access(self, savedir):
@@ -131,18 +106,31 @@ class MinibatchGenerator(object):
 		os.remove(os.path.join(savedir, '.__test-w2v-access'))
 
 
-	def prepare(self, savedir=None):
-		# Before any minibatches can be generated, we need to run over
-		# the corpus to determine the unigram distribution and create
-		# a dictionary mapping all words in the corpus vocabulary to int's.
+	def prepare(self, savedir=None, min_frequency=None):
+		'''
+		Iterate over the entire corpus in order to build a 
+		UnigramDictionary.  We need this because we need to sample
+		from the unigram distribution in producing minibatches.
+		Optionally prune all tokens that occur fewer than min_frequency
+		times from dictionary.  Use min_frequency=None (the default) to
+		specify no pruning.  Optionally save the dictionary to savedir 
+		(this is done after pruning if pruning is requested).
+		'''
 
+		# Before doing anything, if we were requested to save the 
+		# dictionary, make sure we'll be able to do that (fail fast)
 		if savedir is not None:
 			self.check_access(savedir)
 
+		# Read through the corpus, building the UnigramDictionary
 		for line in self.corpus_reader.read_no_q():
-			token_ids = self.dictionary.update(line)
-			self.unigram.update(token_ids)
+			self.unigram_dictionary.update(line)
 
+		# Prune the dictionary, if requested to do so.
+		if min_frequency is not None:
+			self.unigram_dictionary.prune(min_frequency)
+
+		# Save the dictionary, if requested to do so.
 		if savedir is not None:
 			self.save(savedir)
   
@@ -192,14 +180,10 @@ class MinibatchGenerator(object):
 		# of the desired shape.  This has no effect on training, because
 		# we don't care about the embedding of the UNK token
 		signal_batch = np.full(
-			(self.batch_size, 2),
-			self.dictionary.UNK,
-			dtype='int32'
+			(self.batch_size, 2), UNK, dtype='int32'
 		)
 		noise_batch = np.full(
-			(self.batch_size * self.noise_ratio, 2),
-			self.dictionary.UNK,
-			dtype='int32'
+			(self.batch_size * self.noise_ratio, 2), UNK, dtype='int32'
 		)
 		return signal_batch, noise_batch
 
@@ -218,7 +202,7 @@ class MinibatchGenerator(object):
 			if len(line) < 2:
 				continue
 
-			token_ids = self.dictionary.get_ids(line)
+			token_ids = self.unigram_dictionary.get_ids(line)
 
 			# We'll now generate generate signal examples and noise
 			# examples for training
@@ -239,7 +223,7 @@ class MinibatchGenerator(object):
 				signal_batch[i, :] = [query_token_id, context_token_id]
 
 				# Sample tokens from the noise
-				noise_context_ids = self.unigram.sample((self.noise_ratio,))
+				noise_context_ids = self.unigram_dictionary.sample((self.noise_ratio,))
 
 				# Figure out the position within the noise batch
 				j = i*self.noise_ratio
@@ -279,7 +263,7 @@ class MinibatchGenerator(object):
 			if len(line) < 2:
 				continue
 
-			token_ids = self.dictionary.get_ids(line)
+			token_ids = self.unigram_dictionary.get_ids(line)
 
 			# We'll now generate generate signal examples and noise
 			# examples for training
@@ -300,7 +284,7 @@ class MinibatchGenerator(object):
 				signal_batch[i, :] = [query_token_id, context_token_id]
 
 				# Sample tokens from the noise
-				noise_context_ids = self.unigram.sample((self.noise_ratio,))
+				noise_context_ids = self.unigram_dictionary.sample((self.noise_ratio,))
 
 				# Figure out the position within the noise batch
 				j = i*self.noise_ratio
@@ -333,12 +317,12 @@ class MinibatchGenerator(object):
 		This function helps with downsampling of very common words.
 		Returns true when the token should be discarded as a query word
 		'''
-		probability = self.unigram.get_probability(token_id)
+		probability = self.unigram_dictionary.get_probability(token_id)
 		discard_probability = 1 - np.sqrt(self.t/probability)
 		do_discard = np.random.uniform() < discard_probability
 
 		#if do_discard:
-		#	print 'discarding', self.dictionary.get_token(token_id)
+		#	print 'discarding', self.unigram_dictionary.get_token(token_id)
 
 		return do_discard
 

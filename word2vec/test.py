@@ -1,5 +1,6 @@
+from unigram_dictionary import UnigramDictionary
 from collections import Counter, defaultdict
-from dictionary import Dictionary
+from token_map import TokenMap, UNK, SILENT, ERROR
 import re
 import time
 from unittest import main, TestCase
@@ -19,11 +20,264 @@ from minibatch_generator import MinibatchGenerator, TokenChooser
 from corpus_reader import CorpusReader
 import t4k
 import Queue
-from unigram import Node, SampleTree, MultinomialSampler, Unigram
+from counter_sampler import Node, SampleTree, MultinomialSampler, CounterSampler
 
 def sigma(a):
 	return 1/(1+np.exp(-a))
 usigma = np.vectorize(sigma)
+
+
+class TestUnigramDictionary(TestCase):
+	'''
+	Tests that UnigramDictionary properly represents the corpus 
+	statistics, and that the pruning function works as expected.
+	'''
+
+	TOKENS = ['apple', 'pear', 'banana', 'orange']
+
+	# Make a toy corpus with specific token frequencies.
+	FREQUENCIES = {
+		'apple':4, 'banana':8, 'orange':6, 
+		'pineapple':3, 'grapefruit':9
+	}
+	CORPUS = list(Counter(FREQUENCIES).elements())
+
+
+	# TODO test that we actually produce the samples according to the 
+	# frequency distribution of the corpus
+	def test_sampling(self):
+		'''
+		Test basic function of assigning counts, and then sampling from
+		The distribution implied by those counts.
+		'''
+		unigram_dictionary = UnigramDictionary()
+		unigram_dictionary.update(self.FREQUENCIES)
+
+		# Test asking for a single sample (where no shape tuple supplied)
+		single_sample = unigram_dictionary.sample()
+		self.assertTrue(type(single_sample) is np.int64)
+
+		# Test asking for an array of samples (by passing a shape tuple)
+		shape = (2,3,5)
+		array_sample = unigram_dictionary.sample(shape)
+		self.assertTrue(type(array_sample) is np.ndarray)
+		self.assertTrue(array_sample.shape == shape)
+
+
+	def test_counter_sampler_statistics(self):
+		'''
+		This tests that the UnigramDictionary really does produce results 
+		whose statistics match those requested by the counts vector
+		'''
+		# Seed numpy's random function to make the test reproducible
+		np.random.seed(1)
+
+		# Make a sampler with probabilities proportional to counts
+		unigram_dictionary = UnigramDictionary()
+		unigram_dictionary.update(self.CORPUS)
+
+		# Draw one hundred thousand samples, then total up the fraction of
+		# each outcome obseved
+		counter = Counter(unigram_dictionary.sample((100000,)))
+
+		# Make a list of the expected fractions by which each outcome
+		# should be observed, in the limit of infinite sample
+		total_in_expected = float(len(self.CORPUS))
+
+		tolerance = 0.002
+		for idx, found_freq in counter.iteritems():
+			found_frac = found_freq / 100000.0
+			token = unigram_dictionary.get_token(idx)
+			expected_frac = self.FREQUENCIES[token] / total_in_expected
+			self.assertTrue(abs(found_frac - expected_frac) < tolerance)
+
+
+
+
+	def test_unigram_dictionary_token_map(self):
+
+		unigram_dictionary = UnigramDictionary(on_unk=SILENT)
+
+		for idx, fruit in enumerate(self.TOKENS):
+			# Ensure that ids are assigned in an auto-incrementing way
+			# starting from 1 (0 is reserved for the UNK token)
+			self.assertEqual(unigram_dictionary.add(fruit), idx+1)
+
+		for idx, fruit in enumerate(self.TOKENS):
+			# Ensure that idxs are stable and retrievable with 
+			# UnigramDictionary.get_id()
+			self.assertEqual(unigram_dictionary.get_id(fruit), idx+1)
+
+			# Ensure that we can look up the token using the id
+			self.assertEqual(unigram_dictionary.get_token(idx+1), fruit)
+
+		# Ensure the unigram_dictionary knows its own length
+		self.assertEqual(len(unigram_dictionary), len(self.TOKENS)+1)
+
+		# Asking for ids of non-existent tokens returns the UNK token_id
+		self.assertEqual(unigram_dictionary.get_id('no-exist'), 0)
+
+		# Asking for the token at 0 returns 'UNK'
+		self.assertEqual(unigram_dictionary.get_token(0), 'UNK')
+
+		# Asking for token at non-existent idx raises IndexError
+		with self.assertRaises(IndexError):
+			unigram_dictionary.get_token(99)
+
+
+	def test_raise_error_on_unk(self):
+		'''
+		If the unigram_dictionary is constructed passing 
+			on_unk=UnigramDictionary.ERROR
+		then calling get_id() or get_ids() will throw a KeyError if one
+		of the supplied tokens isn't in the unigram_dictionary.  (Normally it 
+		would return 0, which is a token id reserved for 'UNK' -- any
+		unknown token).
+		'''
+
+		unigram_dictionary = UnigramDictionary(on_unk=ERROR)
+		unigram_dictionary.update(self.TOKENS)
+
+		with self.assertRaises(KeyError):
+			unigram_dictionary.get_id('no-exist')
+
+		with self.assertRaises(KeyError):
+			unigram_dictionary.get_ids(['apple', 'no-exist'])
+
+
+
+	def test_plural_functions(self):
+
+		unigram_dictionary = UnigramDictionary(on_unk=SILENT)
+
+		# In these assertions, we offset the expected list of ids by
+		# 1 because the 0th id in unigram_dictionary is reserved for the UNK
+		# token
+
+		# Ensure that update works
+		ids = unigram_dictionary.update(self.TOKENS)
+		self.assertEqual(ids, range(1, len(self.TOKENS)+1))
+
+		# Ensure that get_ids works
+		self.assertEqual(
+			unigram_dictionary.get_ids(self.TOKENS),
+			range(1, len(self.TOKENS)+1)
+		)
+
+		# Ensure that get_tokens works
+		self.assertEqual(
+			unigram_dictionary.get_tokens(range(1, len(self.TOKENS)+1)),
+			self.TOKENS
+		)
+
+		# Asking for ids of non-existent tokens raises KeyError
+		self.assertEqual(
+			unigram_dictionary.get_ids(['apple', 'no-exist']),
+			[self.TOKENS.index('apple')+1, 0]
+		)
+
+		# Asking for token at 0 returns the 'UNK' token
+		self.assertEqual(
+			unigram_dictionary.get_tokens([3,0]),
+			[self.TOKENS[3-1], 'UNK']
+		)
+
+		# Asking for token at non-existent idx raises IndexError
+		with self.assertRaises(IndexError):
+			unigram_dictionary.get_tokens([1,99])
+
+
+	def test_save_load(self):
+
+		unigram_dictionary = UnigramDictionary(on_unk=SILENT)
+		unigram_dictionary.update(self.CORPUS)
+		unigram_dictionary.save('test-data/test-unigram-dictionary')
+
+		unigram_dictionary_copy = UnigramDictionary(on_unk=SILENT)
+		unigram_dictionary_copy.load('test-data/test-unigram-dictionary')
+
+		# Test that the mapping from tokens to ids is unchanged
+		for token in self.FREQUENCIES:
+			self.assertEqual(
+				unigram_dictionary.get_id(token),
+				unigram_dictionary_copy.get_id(token)
+			)
+
+		# Test that the vocabulary size is as expected
+		self.assertEqual(
+			len(unigram_dictionary_copy),
+			len(self.FREQUENCIES)+1
+		)
+
+		# Test that the counts for each token are correct
+		for token, count in self.FREQUENCIES.items():
+			token_id = unigram_dictionary.get_id(token)
+			self.assertEqual(
+				unigram_dictionary_copy.get_frequency(token_id),
+				count
+			)
+
+		# Test that the number of tokens is as expected
+		self.assertEqual(
+			unigram_dictionary_copy.get_num_tokens(),
+			sum(self.FREQUENCIES.values())
+		)
+
+
+
+
+
+
+	def test_pruning(self):
+
+
+		# Make a unigram dictionary, and populate it with the corpus
+		unigram_dictionary = UnigramDictionary()
+		unigram_dictionary.update(self.CORPUS)
+
+		# Ensure that the dictionary has correctly encoded the desired
+		# information about the corpus.
+		for token in unigram_dictionary.token_map.tokens:
+			token_id = unigram_dictionary.get_id(token)
+			freq = unigram_dictionary.get_frequency(token_id)
+			if token == 'UNK':
+				self.assertEqual(freq, 0)
+			else:
+				self.assertEqual(freq, self.FREQUENCIES[token])
+
+		# Check that the dictionary knows the correct number of words.
+		# Recall that this is one more than the number of unique words
+		# in the corpus, because of the reserved 'UNK' word.
+		num_tokens = len(self.FREQUENCIES)+1
+		self.assertEqual(len(unigram_dictionary), num_tokens)
+
+		# Prune the dictionary!
+		unigram_dictionary.prune(min_frequency=6)
+
+		# Check that two elements were dropped from the dictionary
+		# ('apple' and 'pineapple').
+		num_tokens -= 2
+		self.assertEqual(len(unigram_dictionary), num_tokens)
+
+		# Check that the frequences are as expected.  Counts for
+		# apple and pineapple should have been attributed to UNK
+		unk_freq = (
+			self.FREQUENCIES['apple'] + self.FREQUENCIES['pineapple']
+		)
+		for token in unigram_dictionary.token_map.tokens:
+
+			# We should not see apple or pineapple
+			self.assertTrue(token not in ('apple', 'pineapple'))
+
+			token_id = unigram_dictionary.get_id(token)
+			freq = unigram_dictionary.get_frequency(token_id)
+			if token == 'UNK':
+				self.assertEqual(freq, unk_freq)
+			else:
+				self.assertEqual(freq, self.FREQUENCIES[token])
+
+		
+
 
 
 class TestTokenChooser(TestCase):
@@ -336,7 +590,7 @@ class TestTokenChooser(TestCase):
 
 
 
-class TestUnigram(TestCase):
+class TestCounterSampler(TestCase):
 
 	def test_sampling(self):
 		'''
@@ -344,27 +598,27 @@ class TestUnigram(TestCase):
 		The distribution implied by those counts.
 		'''
 		counts = range(1,6)
-		unigram = Unigram()
-		unigram.update(counts)
+		counter_sampler = CounterSampler()
+		counter_sampler.update(counts)
 
 		# Test asking for a single sample (where no shape tuple supplied)
-		single_sample = unigram.sample()
+		single_sample = counter_sampler.sample()
 		self.assertTrue(type(single_sample) is np.int64)
 
 		# Test asking for an array of samples (by passing a shape tuple)
 		shape = (2,3,5)
-		array_sample = unigram.sample(shape)
+		array_sample = counter_sampler.sample(shape)
 		self.assertTrue(type(array_sample) is np.ndarray)
 		self.assertTrue(array_sample.shape == shape)
 
 
 	def test_add_function(self):
 		'''
-		Make sure that the add function is working correctly.  Unigram
+		Make sure that the add function is working correctly.  CounterSampler
 		stores counts as list, wherein the value at position i of the
 		list encodes the number of counts seen for outcome i.
 
-		Counts are added by passing the outcome's index into Unigram.add()
+		Counts are added by passing the outcome's index into CounterSampler.add()
 		which leads to position i of the counts list to be incremented.
 		If position i doesn't exist, it is created.  If the counts list
 		had only j elements before, and a count is added for position
@@ -373,19 +627,19 @@ class TestUnigram(TestCase):
 		Ensure that is done properly
 		'''
 
-		unigram = Unigram()
-		self.assertEqual(unigram.counts, [])
+		counter_sampler = CounterSampler()
+		self.assertEqual(counter_sampler.counts, [])
 
 		outcome_to_add = 6
-		unigram.add(outcome_to_add)
+		counter_sampler.add(outcome_to_add)
 		expected_counts = [0]*(outcome_to_add) + [1]
-		self.assertEqual(unigram.counts, expected_counts)
+		self.assertEqual(counter_sampler.counts, expected_counts)
 
 		# Now ensure the underlying sampler can tolerate a counts list
 		# containing zeros, and that the sampling statistics is as expected.
 		# We expect that the only outcome that should turn up is outcome
 		# 6, since it has all the probability mass.  Check that.
-		counter = Counter(unigram.sample((100000,))) # should be all 6's
+		counter = Counter(counter_sampler.sample((100000,))) # should be all 6's
 		total = float(sum(counter.values()))
 		found_normalized = [
 			counter[i] / total for i in range(outcome_to_add+1)
@@ -400,7 +654,7 @@ class TestUnigram(TestCase):
 		self.assertEqual(found_normalized, expected_normalized)
 
 
-	def test_unigram_statistics(self):
+	def test_counter_sampler_statistics(self):
 		'''
 		This tests that the sampler really does produce results whose
 		statistics match those requested by the counts vector
@@ -410,13 +664,13 @@ class TestUnigram(TestCase):
 
 		# Make a sampler with probabilities proportional to counts
 		counts = range(1,6)
-		unigram = Unigram()
+		counter_sampler = CounterSampler()
 		for outcome, count in enumerate(counts):
-			unigram.update([outcome]*count)
+			counter_sampler.update([outcome]*count)
 
 		# Draw one hundred thousand samples, then total up the fraction of
 		# each outcome obseved
-		counter = Counter(unigram.sample((100000,)))
+		counter = Counter(counter_sampler.sample((100000,)))
 		total = float(sum(counter.values()))
 		found_normalized = [
 			counter[i] / total for i in range(len(counts))
@@ -440,19 +694,19 @@ class TestUnigram(TestCase):
 
 	def test_save_load(self):
 
-		fname = 'test-data/test-unigram/test-unigram.gz'
+		fname = 'test-data/test-counter-sampler/test-counter-sampler.gz'
 
 		# Make a sampler with probabilities proportional to counts
 		counts = range(1,6)
-		unigram = Unigram()
+		counter_sampler = CounterSampler()
 		for outcome, count in enumerate(counts):
-			unigram.update([outcome]*count)
+			counter_sampler.update([outcome]*count)
 
-		unigram.save(fname)
+		counter_sampler.save(fname)
 
-		new_unigram = Unigram()
-		new_unigram.load(fname)
-		self.assertEqual(new_unigram.counts, counts)
+		new_counter_sampler = CounterSampler()
+		new_counter_sampler.load(fname)
+		self.assertEqual(new_counter_sampler.counts, counts)
 
 
 class TestMultinomialSampler(TestCase):
@@ -609,117 +863,117 @@ class TestCorpusReader(TestCase):
 		self.assertItemsEqual(found_lines, expected_lines)
 
 
-class TestDictionary(TestCase):
+class TestTokenMap(TestCase):
 
 	TOKENS = ['apple', 'pear', 'banana', 'orange']
 
-	def test_dictionary(self):
+	def test_token_map(self):
 
-		dictionary = Dictionary(on_unk=Dictionary.SILENT)
+		token_map = TokenMap(on_unk=SILENT)
 
 		for idx, fruit in enumerate(self.TOKENS):
 			# Ensure that ids are assigned in an auto-incrementing way
 			# starting from 1 (0 is reserved for the UNK token)
-			self.assertEqual(dictionary.add(fruit), idx+1)
+			self.assertEqual(token_map.add(fruit), idx+1)
 
 		for idx, fruit in enumerate(self.TOKENS):
 			# Ensure that idxs are stable and retrievable with 
-			# Dictionary.get_id()
-			self.assertEqual(dictionary.get_id(fruit), idx+1)
+			# TokenMap.get_id()
+			self.assertEqual(token_map.get_id(fruit), idx+1)
 
 			# Ensure that we can look up the token using the id
-			self.assertEqual(dictionary.get_token(idx+1), fruit)
+			self.assertEqual(token_map.get_token(idx+1), fruit)
 
-		# Ensure the dictionary knows its own length
-		self.assertEqual(len(dictionary), len(self.TOKENS)+1)
+		# Ensure the token_map knows its own length
+		self.assertEqual(len(token_map), len(self.TOKENS)+1)
 
 		# Asking for ids of non-existent tokens returns the UNK token_id
-		self.assertEqual(dictionary.get_id('no-exist'), 0)
+		self.assertEqual(token_map.get_id('no-exist'), 0)
 
 		# Asking for the token at 0 returns 'UNK'
-		self.assertEqual(dictionary.get_token(0), 'UNK')
+		self.assertEqual(token_map.get_token(0), 'UNK')
 
 		# Asking for token at non-existent idx raises IndexError
 		with self.assertRaises(IndexError):
-			dictionary.get_token(99)
+			token_map.get_token(99)
 
 
 	def test_raise_error_on_unk(self):
 		'''
-		If the dictionary is constructed passing 
-			on_unk=Dictionary.ERROR
+		If the token_map is constructed passing 
+			on_unk=TokenMap.ERROR
 		then calling get_id() or get_ids() will throw a KeyError if one
-		of the supplied tokens isn't in the dictionary.  (Normally it 
+		of the supplied tokens isn't in the token_map.  (Normally it 
 		would return 0, which is a token id reserved for 'UNK' -- any
 		unknown token).
 		'''
 
-		dictionary = Dictionary(on_unk=Dictionary.ERROR)
-		dictionary.update(self.TOKENS)
+		token_map = TokenMap(on_unk=ERROR)
+		token_map.update(self.TOKENS)
 
 		with self.assertRaises(KeyError):
-			dictionary.get_id('no-exist')
+			token_map.get_id('no-exist')
 
 		with self.assertRaises(KeyError):
-			dictionary.get_ids(['apple', 'no-exist'])
+			token_map.get_ids(['apple', 'no-exist'])
 
 
 
-	def test_dictionary_plural_functions(self):
+	def test_token_map_plural_functions(self):
 
-		dictionary = Dictionary(on_unk=Dictionary.SILENT)
+		token_map = TokenMap(on_unk=SILENT)
 
 		# In these assertions, we offset the expected list of ids by
-		# 1 because the 0th id in dictionary is reserved for the UNK
+		# 1 because the 0th id in token_map is reserved for the UNK
 		# token
 
 		# Ensure that update works
-		ids = dictionary.update(self.TOKENS)
+		ids = token_map.update(self.TOKENS)
 		self.assertEqual(ids, range(1, len(self.TOKENS)+1))
 
 		# Ensure that get_ids works
 		self.assertEqual(
-			dictionary.get_ids(self.TOKENS),
+			token_map.get_ids(self.TOKENS),
 			range(1, len(self.TOKENS)+1)
 		)
 
 		# Ensure that get_tokens works
 		self.assertEqual(
-			dictionary.get_tokens(range(1, len(self.TOKENS)+1)),
+			token_map.get_tokens(range(1, len(self.TOKENS)+1)),
 			self.TOKENS
 		)
 
 		# Asking for ids of non-existent tokens raises KeyError
 		self.assertEqual(
-			dictionary.get_ids(['apple', 'no-exist']),
+			token_map.get_ids(['apple', 'no-exist']),
 			[self.TOKENS.index('apple')+1, 0]
 		)
 
 		# Asking for token at 0 returns the 'UNK' token
 		self.assertEqual(
-			dictionary.get_tokens([3,0]),
+			token_map.get_tokens([3,0]),
 			[self.TOKENS[3-1], 'UNK']
 		)
 
 		# Asking for token at non-existent idx raises IndexError
 		with self.assertRaises(IndexError):
-			dictionary.get_tokens([1,99])
+			token_map.get_tokens([1,99])
 
 
 	def test_save_load(self):
-		dictionary = Dictionary(on_unk=Dictionary.SILENT)
-		dictionary.update(self.TOKENS)
-		dictionary.save('test-data/test-dictionary/test-dictionary.gz')
+		token_map = TokenMap(on_unk=SILENT)
+		token_map.update(self.TOKENS)
+		token_map.save('test-data/test-token-map/test-token-map.gz')
 
-		dictionary_copy = Dictionary(on_unk=Dictionary.SILENT)
-		dictionary_copy.load(
-			'test-data/test-dictionary/test-dictionary.gz'
+		token_map_copy = TokenMap(on_unk=SILENT)
+		token_map_copy.load(
+			'test-data/test-token-map/test-token-map.gz'
 		)
 		self.assertEqual(
-			dictionary_copy.get_ids(self.TOKENS),
+			token_map_copy.get_ids(self.TOKENS),
 			range(1, len(self.TOKENS)+1)
 		)
-		self.assertEqual(len(dictionary_copy), len(self.TOKENS)+1)
+		self.assertEqual(len(token_map_copy), len(self.TOKENS)+1)
 
 
 
@@ -774,7 +1028,7 @@ class TestMinibatchGenerator(TestCase):
 		)
 
 		# Make another MinibatchGenerator, and pre-load this one with 
-		# dictionary and unigram distribution information.
+		# token_map and counter_sampler distribution information.
 		self.preloaded_generator = MinibatchGenerator(
 			files=self.files,
 			t=self.t,
@@ -788,22 +1042,20 @@ class TestMinibatchGenerator(TestCase):
 	def test_prepare(self):
 		'''
 		Check that MinibatchGenerator.prepare() properly makes a 
-		dictionary and unigram distribution that reflects the corpus
+		UnigramDictionary that reflects the corpus.
 		'''
 		self.generator.prepare()
-		d = self.generator.dictionary
-		u = self.generator.unigram
+		d = self.generator.unigram_dictionary
 
 		# Make sure that all of the expected tokens are found in the 
-		# dictionary, and that their frequency in the unigram distribution
-		# is correct
+		# unigram_dictionary, and that their frequency in the is correct.
 		tokens = []
 		for filename in self.files:
 			tokens.extend(open(filename).read().split())
 		counts = Counter(tokens)
 		for token in tokens:
 			token_id = d.get_id(token)
-			count = u.counts[token_id]
+			count = d.get_frequency(token_id)
 			self.assertEqual(count, counts[token])
 
 
@@ -829,7 +1081,7 @@ class TestMinibatchGenerator(TestCase):
 		# one another's contexts.  Build a lookup table providing the set
 		# of token_ids that arose in the context of each given token_id
 		legal_pairs = defaultdict(set)
-		d = self.preloaded_generator.dictionary
+		d = self.preloaded_generator.unigram_dictionary
 		for line in tokenized_lines:
 			token_ids = d.get_ids(line)
 			for i, token_id in enumerate(token_ids):
@@ -859,9 +1111,9 @@ class TestMinibatchGenerator(TestCase):
 		# Ensure reproducibility for the test
 		np.random.seed(1)
 
-		# Get the preloaded generator and its dictionary
+		# Get the preloaded generator and its unigram_dictionary
 		self.preloaded_generator
-		d = self.preloaded_generator.dictionary
+		d = self.preloaded_generator.unigram_dictionary
 
 		# Go through the corpus and get all the token ids as a list
 		token_ids = []
@@ -945,15 +1197,10 @@ class TestWord2VecOnCorpus(TestCase):
 		# timing
 		#print 'compiling'
 		word2vec.train(
-			np.full(
-				(batch_size, 2),
-				minibatch_generator.dictionary.UNK,
-				dtype='int32'
-			),
+			np.full((batch_size, 2), UNK, dtype='int32'),
 			np.full(
 				(batch_size*minibatch_generator.noise_ratio, 2), 
-				minibatch_generator.dictionary.UNK,
-				dtype='int32'
+				UNK, dtype='int32'
 			)
 		)
 

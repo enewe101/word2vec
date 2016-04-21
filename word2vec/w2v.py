@@ -10,8 +10,8 @@ from lasagne.layers import (
 	get_all_param_values
 )
 from lasagne.init import Normal
-from dictionary import Dictionary
-from unigram import Unigram, MultinomialSampler
+from token_map import TokenMap
+from counter_sampler import CounterSampler, MultinomialSampler
 
 
 def word2vec(
@@ -24,8 +24,8 @@ def word2vec(
 		savedir=None,
 		num_epochs=5,
 		skip=[],
-		dictionary=None,
-		unigram=None,
+		token_map=None,
+		counter_sampler=None,
 		noise_ratio=15,
 		kernel=[1,2,3,4,5,5,4,3,2,1],
 		t = 1.0e-5,
@@ -75,8 +75,8 @@ def word2vec(
 		files=files,
 		directories=directories,
 		skip=skip,
-		dictionary=dictionary,
-		unigram=unigram,
+		token_map=token_map,
+		counter_sampler=counter_sampler,
 		noise_ratio=noise_ratio,
 		kernel=kernel,
 		t=t,
@@ -84,7 +84,7 @@ def word2vec(
 		parse=parse
 	)
 
-	# Prpare the minibatch generator (this produces the unigram stats)
+	# Prpare the minibatch generator (this produces the counter_sampler stats)
 	minibatch_generator.prepare(savedir=savedir)
 
 	# Iterate over the corpus, training the embeddings
@@ -287,22 +287,22 @@ class Word2Vec(object):
 			- `files` and `directories` can be strings, or iterables of
 				strings, including custom generators that walk the 
 				filesystem
-		1) Makes a dictionary which encodes tokens as integers
-			- the dictionary class stores a two-way mapping between 
+		1) Makes a token_map which encodes tokens as integers
+			- the token_map class stores a two-way mapping between 
 				token types (i.e. unique words) and integers
-			- forward mapping from tokens to integers uses a dictionary
+			- forward mapping from tokens to integers uses a token_map
 				with keys as tokens and ints as values
 			- revrese mapping from integers to tokens uses a list of tokens
-		2) Makes a unigram model which enables sampling from the unigram
+		2) Makes a counter_sampler model which enables sampling from the counter_sampler
 			model
 			- keeps count of how many times a given tokens were seen
 				(using a list whose values are counts and whose 
 					components are the token ids)
-			- enables rapid sampling from the unigram distribution. Using
+			- enables rapid sampling from the counter_sampler distribution. Using
 				a binary tree structure.  The first time sampling is 
 				attempted after an update has been made to the counts,
 				the tree is updated / generated.
-			- a full pass through the corpus is needed to create the unigram
+			- a full pass through the corpus is needed to create the counter_sampler
 				model.
 		3) Generates batches of signal and noise examples to train the
 			embeddings
@@ -311,19 +311,19 @@ class Word2Vec(object):
 		If `savedir` is specified, then three files will be saved into
 		the directory specified by savedir (savedir will be created if 
 		it doesn't exist, as long as other dirs in its path already exist)
-		1) savedir/dictionary.gz -- stores the dictionary mapping
-		2) savedir/unigram.gz -- stores the unigram frequencies.  This 
+		1) savedir/token_map.gz -- stores the token_map mapping
+		2) savedir/counter_sampler.gz -- stores the counter_sampler frequencies.  This 
 			means that future training using different sampling will
-			not need to re-count the unigram frequencies!
+			not need to re-count the counter_sampler frequencies!
 		3) savedir/embeddings.gz -- stores the embedding parameters for
 			both query-embeddings (which is the main word embedding of use
 			in other applications) as well as the context-embedding (not
 			usually needed for other applications, but kept for 
 			completeness)
 
-		if `loaddir` is specified, the dictionary and unigram saved in
-		loaddir/dictionary.gz and loaddir/unigram.gz will be loaded.
-		This means that the unigram frequencies (and dictionary) don't 
+		if `loaddir` is specified, the token_map and counter_sampler saved in
+		loaddir/token_map.gz and loaddir/counter_sampler.gz will be loaded.
+		This means that the counter_sampler frequencies (and token_map) don't 
 		need to be made before training.
 		'''
 
@@ -343,26 +343,26 @@ class Word2Vec(object):
 			else:
 				os.mkdir(savedir)
 
-		# Create a dictionary.  We'll pass it into the minibatch generator,
+		# Create a token_map.  We'll pass it into the minibatch generator,
 		# but we want a reference to it in the Word2Vec object too, 
-		# since it also needs the dictionary
-		dictionary = Dictionary()
+		# since it also needs the token_map
+		token_map = TokenMap()
 
 		# Make a minibatch generator
 		minibatch_generator = MinibatchGenerator(
-			files, directories, skip, dictionary
+			files, directories, skip, token_map
 		)
 
-		# Run the minibatch generator over the corpus to collect unigram
-		# statistics and to fill out the dictionary
-		minibatch_generator.prepare_unigram()
+		# Run the minibatch generator over the corpus to collect counter_sampler
+		# statistics and to fill out the token_map
+		minibatch_generator.prepare_counter_sampler()
 
-		# We now have a full dictionary and the unigram statistics.
+		# We now have a full token_map and the counter_sampler statistics.
 		# Save them if savedir was specified
 		if savedir is not None:
-			dictionary.save(os.path.join(savedir, 'dictionary.gz'))
-			minibatch_generator.save_unigram(
-				os.path.join(savedir, 'unigram.gz')
+			token_map.save(os.path.join(savedir, 'token_map.gz'))
+			minibatch_generator.save_counter_sampler(
+				os.path.join(savedir, 'counter_sampler.gz')
 			)
 
 		# Here is where the training actually happens
@@ -375,7 +375,7 @@ class Word2Vec(object):
 
 
 	def save(self, savedir):
-		self.dictionary.save(os.path.join(savedir, 'dictionary.gz'))
+		self.token_map.save(os.path.join(savedir, 'token_map.gz'))
 		self.embedder.save(os.path.join(savedir, 'embedding.npz'))
 
 
