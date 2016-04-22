@@ -7,3 +7,4 @@ from minibatch_generator import MinibatchGenerator, TokenChooser
 from counter_sampler import (
 	CounterSampler, CounterSamplerException, MultinomialSampler
 )
+from unigram_dictionary import UnigramDictionary
