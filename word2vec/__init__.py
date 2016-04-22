@@ -5,5 +5,6 @@ from corpus_reader import CorpusReader, default_parse
 from token_map import TokenMap
 from minibatch_generator import MinibatchGenerator, TokenChooser
 from counter_sampler import (
-	CounterSampler, CounterSamplerException, MultinomialSampler
+	CounterSampler, CounterSamplerException, MultinomialSampler, 
+	UnigramDictionary
 )
