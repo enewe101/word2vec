@@ -1,9 +1,10 @@
+import time
 from multiprocessing import Queue, Process, Pipe
 from Queue import Empty
 from corpus_reader import CorpusReader, default_parse
 from counter_sampler import MultinomialSampler
 from token_map import UNK
-from unigram_dictionary import UnigramDictionary
+from unigram_dictionary import UnigramDictionary, WARN, SILENT
 import numpy as np
 import gzip
 import os
@@ -133,6 +134,13 @@ class MinibatchGenerator(object):
 		# Save the dictionary, if requested to do so.
 		if savedir is not None:
 			self.save(savedir)
+
+
+	def prune(self, min_frequency=5):
+		'''
+		Exposes the prune function for the underlying UnigramDictionary
+		'''
+		self.unigram_dictionary.prune(min_frequency)
   
 
 	def __iter__(self):
@@ -212,7 +220,7 @@ class MinibatchGenerator(object):
 				if self.do_discard(query_token_id):
 					continue
 
-				# Increment position within the batch
+				# Increent position within the batch
 				i += 1
 
 				# Sample a token from the context
@@ -223,7 +231,8 @@ class MinibatchGenerator(object):
 				signal_batch[i, :] = [query_token_id, context_token_id]
 
 				# Sample tokens from the noise
-				noise_context_ids = self.unigram_dictionary.sample((self.noise_ratio,))
+				noise_context_ids = self.unigram_dictionary.sample(
+					(self.noise_ratio,))
 
 				# Figure out the position within the noise batch
 				j = i*self.noise_ratio

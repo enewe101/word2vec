@@ -17,7 +17,7 @@ class UnigramDictionary(object):
 	'''
 
 
-	def __init__(self, on_unk=WARN, token_map=None, counter_sampler=None):
+	def __init__(self, on_unk=SILENT, token_map=None, counter_sampler=None):
 		'''
 		Create a new UnigramDictionary.  Typical usage provides no
 		arguments, but a token_map and counter_sampler can be provided

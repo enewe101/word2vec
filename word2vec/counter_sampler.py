@@ -61,6 +61,7 @@ class CounterSampler(object):
 
 		if not self.sampler_ready:
 			self._sampler = MultinomialSampler(self.counts)
+			self.sampler_ready = True
 
 		return self._sampler
 
