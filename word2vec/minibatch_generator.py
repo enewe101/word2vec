@@ -153,7 +153,6 @@ class MinibatchGenerator(object):
 		# minibatches are used.  The idea is that this will keep the 
 		# CPU(s) busy while training occurs on the GPU
 
-		# Read through the corpus line by line, and generate samples
 		self.minibatches = Queue()
 		self.recv_pipe, send_pipe = Pipe()
 
@@ -171,7 +170,7 @@ class MinibatchGenerator(object):
 		np.random.uniform()
 
 		minibatch_preparation = Process(
-			target=self.prepare_minibatches,
+			target=self.enqueue_minibatches,
 			args=(self.minibatches, send_pipe)
 		)
 		minibatch_preparation.start()
@@ -220,7 +219,7 @@ class MinibatchGenerator(object):
 				if self.do_discard(query_token_id):
 					continue
 
-				# Increent position within the batch
+				# Increment position within the batch
 				i += 1
 
 				# Sample a token from the context
@@ -258,66 +257,45 @@ class MinibatchGenerator(object):
 			yield (signal_batch, noise_batch)
 
 
-	def prepare_minibatches(self, minibatch_queue, send_pipe):
+	def get_minibatches(self):
+		'''
+		Reads through the entire corpus, generating all of the minibatches
+		up front, storing them in memory as a list.  Returns the list of
+		minibatches.
+		'''
+		minibatches = []
+		for signal_batch, noise_batch in self.generate():
+			minibatches.append((signal_batch, noise_batch))
 
-		chooser = TokenChooser(K=len(self.kernel)/2, kernel=self.kernel)
-		signal_batch, noise_batch = self.init_batch()
+		return minibatches
 
-		# i keeps track of position in the signal batch
-		i = -1
-		for line in self.corpus_reader.read_no_q():
 
-			# Isolated tokens (e.g. one-word sentences) have no context
-			# and can't be used for training.
-			if len(line) < 2:
-				continue
+	def enqueue_minibatches(self, minibatch_queue, send_pipe):
 
-			token_ids = self.unigram_dictionary.get_ids(line)
+		'''
+		Reads through the minibatches, placing them on a queue as they
+		are ready.  This usually shouldn't be called directly, but 
+		is used when the MinibatchGenerator is treated as an iterator, e.g.:
 
-			# We'll now generate generate signal examples and noise
-			# examples for training
-			for query_token_pos, query_token_id in enumerate(token_ids):
+			for signal, noise in my_minibatch_generator:
+				do_something_with(signal, noise)
 
-				# Possibly discard the token
-				if self.do_discard(query_token_id):
-					continue
+		It causes the minibatches to be prepared in a separate process
+		using this function, placing them on a queue, while a generator
+		construct pulls them off the queue as the client process requests
+		them.  This keeps minibatch preparation running in the background
+		while the client process is busy processing previously yielded 
+		minibatches.
+		'''
 
-				# Increment position within the batch
-				i += 1
-
-				# Sample a token from the context
-				context_token_pos = chooser.choose_token(
-					query_token_pos, len(token_ids)
-				)
-				context_token_id = token_ids[context_token_pos]
-				signal_batch[i, :] = [query_token_id, context_token_id]
-
-				# Sample tokens from the noise
-				noise_context_ids = self.unigram_dictionary.sample((self.noise_ratio,))
-
-				# Figure out the position within the noise batch
-				j = i*self.noise_ratio
-
-				# block-assign the noise samples to the noise batch array
-				noise_batch[j:j+self.noise_ratio, :] = [
-					[query_token_id, noise_context_id]
-					for noise_context_id in noise_context_ids
-				]
-
-				# Once we've finished assembling a minibatch, enqueue it
-				# and start assemblin a new minibatch
-				if i == self.batch_size - 1:
-					minibatch_queue.put((signal_batch, noise_batch))
-					signal_batch, noise_batch = self.init_batch()
-					i = -1
-
-		# Normally we'll have a partially filled minibatch after processing
-		# the corpus.  The elements in the batch that weren't overwritten
-		# contain UNK tokens, which act as padding.  Enqueue the partial
-		# minibatch.
-		if i >= 0:
+		# Continuously iterate through the dataset, enqueing each
+		# minibatch.  The consumer will process minibatches from
+		# the queue at it's own pace.
+		for signal_batch, noise_batch in self.generate():
 			minibatch_queue.put((signal_batch, noise_batch))
 
+		# Notify parent process that iteration through the corpus is
+		# complete (so it doesn't need to wait for more minibatches)
 		send_pipe.send(self.DONE)
 
 
