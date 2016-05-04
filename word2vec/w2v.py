@@ -1,42 +1,45 @@
+from noise_contrast import NoiseContraster
 import os
-import sys
 import numpy as np
-import theano
-import theano.tensor as T
-from theano import function, scan
+from theano import tensor as T, function
 import lasagne
+from minibatcher import Word2VecMinibatcher
 from lasagne.layers import (
 	get_output, InputLayer, EmbeddingLayer, get_all_params,
 	get_all_param_values
 )
 from lasagne.init import Normal
-from token_map import TokenMap
-from counter_sampler import CounterSampler, MultinomialSampler
+
+
+def row_dot(matrixA, matrixB):
+	C = (matrixA * matrixB).sum(axis=1)
+	return C
+
+
+def sigmoid(tensor_var):
+	return 1/(1+T.exp(-tensor_var))
 
 
 def word2vec(
 		files=[],
 		directories=[],
-
-		# ^^^ At a minimum, either files or directories should be specified
-		# vvv All other arguments are strictly optional
-
+		skip=[],
 		savedir=None,
 		num_epochs=5,
-		skip=[],
-		token_map=None,
-		counter_sampler=None,
+		unigram_dictionary=None,
 		noise_ratio=15,
 		kernel=[1,2,3,4,5,5,4,3,2,1],
 		t = 1.0e-5,
 		batch_size = 1000,
 		num_embedding_dimensions=500,
-		word_embedding_init=Normal(), 
+		word_embedding_init=Normal(),
 		context_embedding_init=Normal(),
 		learning_rate=0.1,
 		momentum=0.9,
 		verbose=True,
+		num_example_generators=3
 	):
+
 	'''
 	Helper function that handles all concerns involved in training
 	A word2vec model using the approach of Mikolov et al.  It surfaces
@@ -48,6 +51,24 @@ def word2vec(
 	point for you.
 	'''
 
+	# Make a Word2VecMinibatcher
+	minibatcher = Word2VecMinibatcher(
+		files=files,
+		directories=directories,
+		skip=skip,
+		unigram_dictionary=unigram_dictionary,
+		noise_ratio=noise_ratio,
+		kernel=kernel,
+		t=t,
+		batch_size=batch_size,
+		verbose=verbose,
+		num_example_generators=num_example_generators
+	)
+
+	# Prpare the minibatch generator 
+	# (this produces the counter_sampler stats)
+	minibatcher.prepare(savedir=savedir)
+
 	# Define the input theano variables
 	signal_input = T.imatrix('query_input')
 	noise_input = T.imatrix('noise_input')
@@ -58,10 +79,12 @@ def word2vec(
 
 	# Make a Word2VecEmbedder object, feed it the combined input
 	word2vec_embedder = Word2VecEmbedder(
-		combined_input,
-		batch_size,
-		vocab_size,
-		num_embedding_dimensions
+		input_var=combined_input,
+		batch_size=batch_size,
+		vocabulary_size=minibatcher.get_vocab_size(),
+		num_embedding_dimensions=num_embedding_dimensions,
+		word_embedding_init=word_embedding_init,
+		context_embedding_init=context_embedding_init
 	)
 
 	# Get the params and output from the word2vec embedder, feed that
@@ -70,28 +93,15 @@ def word2vec(
 	params = word2vec_embedder.get_params()
 	train = noise_contraster.get_train_func(combined_output, params)
 
-	# Make a MinibatchGenerator
-	minibatch_generator = MinibatchGenerator(
-		files=files,
-		directories=directories,
-		skip=skip,
-		token_map=token_map,
-		counter_sampler=counter_sampler,
-		noise_ratio=noise_ratio,
-		kernel=kernel,
-		t=t,
-		batch_size=batch_size,
-		parse=parse
-	)
-
-	# Prpare the minibatch generator (this produces the counter_sampler stats)
-	minibatch_generator.prepare(savedir=savedir)
-
 	# Iterate over the corpus, training the embeddings
 	for epoch in range(num_epochs):
-		print 'starting epoch %d' % epoch
-		for signal_batch, noise_batch in minibatch_generator.generate():
-			loss = train(signal_batch, noise_batch)
+		if verbose:
+			print 'starting epoch %d' % epoch
+		losses = []
+		for signal_batch, noise_batch in minibatcher:
+			losses.append(train(signal_batch, noise_batch))
+		if verbose:
+			print '\tAverage loss: %f' % np.mean(losses)
 
 	# Save the model (the embeddings) if savedir was provided
 	if savedir is not None:
@@ -99,330 +109,8 @@ def word2vec(
 		word2vec_embedder.save(embeddings_filename)
 
 	# Return the trained word2vec_embedder
-	return word2vec_embedder
+	return word2vec_embedder, minibatcher.unigram_dictionary
 
-
-
-
-
-
-
-
-
-def noise_contrast(signal, noise, scale=True):
-	'''
-	Takes the theano symbolic variables `signal` and `noise`, whose
-	elements are interpreted as probabilities, and creates a loss
-	function which rewards large probabilities in signal and penalizes 
-	large probabilities in noise.
-	
-	`signal` and `noise` can have any shape.  Their contributions will be 
-	summed over all dimensions.
-
-	If `scale` is true, then scale the loss function by the size of the
-	signal tensor --- i.e. divide by the signal batch size.  This makes
-	the scale of the loss function invariant to changes in batch size
-	'''
-
-	signal_score = T.log(signal).sum()
-	noise_score = T.log(1-noise).sum()
-	objective = signal_score + noise_score
-	loss = -objective
-
-	loss = loss / signal.shape[0]
-	
-	return loss
-
-
-
-class NoiseContraster(object):
-
-	def __init__(
-		self,
-		signal_input,
-		noise_input,
-		learning_rate=0.1,
-		momentum=0.9
-	):
-		self.signal_input = signal_input
-		self.noise_input = noise_input
-		self.learning_rate = learning_rate
-		self.momentum=momentum
-
-		self.combined = T.concatenate([
-			self.signal_input, self.noise_input
-		])
-
-	def get_combined_input(self):
-		return self.combined
-
-	def get_train_func(self, output, params):
-
-		# Split the output based on the size of the individual input streams
-		self.signal_output = output[:self.signal_input.shape[0]]
-		self.noise_output = output[self.signal_input.shape[0]:]
-
-		# Construct the loss based on Noise Contrastive Estimation
-		self.loss = noise_contrast(self.signal_output, self.noise_output)
-
-		# Get the parameter updates using stochastic gradient descent with
-		# nesterov momentum.  TODO: make the updates configurable
-		self.updates = lasagne.updates.nesterov_momentum(
-			self.loss,
-			params,
-			self.learning_rate,
-			self.momentum
-		)
-
-		self.train = function(
-			inputs=[self.signal_input, self.noise_input], 
-			outputs=self.loss,
-			updates=self.updates
-		)
-
-		return self.train
-
-
-
-class Word2Vec(object):
-
-	def __init__(
-		self,
-		batch_size,
-		vocabulary_size=100000,
-		num_embedding_dimensions=500,
-		word_embedding_init=Normal(), 
-		context_embedding_init=Normal(),
-		learning_rate=0.1,
-		momentum=0.9,
-		verbose=True
-	):
-
-		# Register all the arguments for easy inspection and access
-		self.batch_size = batch_size
-		self.vocabulary_size = vocabulary_size
-		self.num_embedding_dimensions = num_embedding_dimensions
-		self.word_embedding_init = word_embedding_init
-		self.context_embedding_init = context_embedding_init
-		self.learning_rate = learning_rate
-		self.momentum = momentum
-		self.verbose = verbose
-
-		# The input that we pass through the Word2VecEmbedder will be
-		# the concatenation of the signal and noise examples
-		self.positive_input = T.imatrix('positive_input')
-		self.negative_input = T.imatrix('negative_input')
-		embedder_input = T.concatenate([
-			self.positive_input, self.negative_input
-		])
-
-		# Make a Word2VecEmbedder
-		self.embedder = Word2VecEmbedder(
-			embedder_input,
-			batch_size,
-			vocabulary_size=vocabulary_size,
-			num_embedding_dimensions=num_embedding_dimensions,
-			word_embedding_init=word_embedding_init,
-			context_embedding_init=context_embedding_init
-		)
-
-		# Split the output back up into its positive and negative parts
-		embedder_output = self.embedder.get_output()
-
-		self.positive_output = embedder_output[
-			:self.positive_input.shape[0]
-		]
-		self.negative_output = embedder_output[
-			self.positive_input.shape[0]:
-		]
-
-		# Construct the loss based on Noise Contrastive Estimation
-		self.loss = noise_contrast(
-			self.positive_output, self.negative_output
-		)
-
-		# Get the parameter updates using stochastic gradient descent with
-		# nesterov momentum.  TODO: make the updates configurable
-		self.updates = lasagne.updates.nesterov_momentum(
-			self.loss,
-			self.embedder.get_params(), 
-			learning_rate,
-			momentum
-		)
-
-		# That's everything we need to compile a training function.
-		# The training fuction will be defined separately, and will 
-		# wrap the compiled theano function, which will be compiled when
-		# it is first called.
-
-
-	def get_param_values(self):
-		'''
-		Returns the values of the embedding parameters, from the 
-		underlying embedder.
-		'''
-		return self.embedder.get_param_values()
-
-	def get_params(self):
-		'''
-		Returns the embedding parameters, of the underlying embedders.
-		'''
-		return self.embedder.get_params()
-
-
-	def train_from_corpus(
-		self, files=[], directories=[], skip=[],
-		loaddir=None, savedir=None
-	):
-		'''
-		Takes an iterable of paths that point to corpus files / folders.
-		Reads those files, and:
-		0) Reads sentence-split, tokenized documents in a way that 
-			manages memory and avoid's blocking downstream steps during
-			I/O requests.
-			- a reading process stays ahead of the downstream process in
-				loading files into memory
-			- a customizable parser is responsible for understanding the
-				file format
-			- `files` and `directories` can be strings, or iterables of
-				strings, including custom generators that walk the 
-				filesystem
-		1) Makes a token_map which encodes tokens as integers
-			- the token_map class stores a two-way mapping between 
-				token types (i.e. unique words) and integers
-			- forward mapping from tokens to integers uses a token_map
-				with keys as tokens and ints as values
-			- revrese mapping from integers to tokens uses a list of tokens
-		2) Makes a counter_sampler model which enables sampling from the counter_sampler
-			model
-			- keeps count of how many times a given tokens were seen
-				(using a list whose values are counts and whose 
-					components are the token ids)
-			- enables rapid sampling from the counter_sampler distribution. Using
-				a binary tree structure.  The first time sampling is 
-				attempted after an update has been made to the counts,
-				the tree is updated / generated.
-			- a full pass through the corpus is needed to create the counter_sampler
-				model.
-		3) Generates batches of signal and noise examples to train the
-			embeddings
-
-
-		If `savedir` is specified, then three files will be saved into
-		the directory specified by savedir (savedir will be created if 
-		it doesn't exist, as long as other dirs in its path already exist)
-		1) savedir/token_map.gz -- stores the token_map mapping
-		2) savedir/counter_sampler.gz -- stores the counter_sampler frequencies.  This 
-			means that future training using different sampling will
-			not need to re-count the counter_sampler frequencies!
-		3) savedir/embeddings.gz -- stores the embedding parameters for
-			both query-embeddings (which is the main word embedding of use
-			in other applications) as well as the context-embedding (not
-			usually needed for other applications, but kept for 
-			completeness)
-
-		if `loaddir` is specified, the token_map and counter_sampler saved in
-		loaddir/token_map.gz and loaddir/counter_sampler.gz will be loaded.
-		This means that the counter_sampler frequencies (and token_map) don't 
-		need to be made before training.
-		'''
-
-		# If a savedir is given, check that it is valid before proceeding
-		# that way we fail fast if there's an IO issue
-		if savedir is not None:
-
-			# if savedir exists, just make sure it's not a file
-			if os.path.exsits(savedir):
-				if os.path.isfile(savedir):
-					raise IOError(
-						'Path supplied as `savedir` is a file: %s'
-						% savedir
-					)
-
-			# if savedir doesn't exist, try to make it
-			else:
-				os.mkdir(savedir)
-
-		# Create a token_map.  We'll pass it into the minibatch generator,
-		# but we want a reference to it in the Word2Vec object too, 
-		# since it also needs the token_map
-		token_map = TokenMap()
-
-		# Make a minibatch generator
-		minibatch_generator = MinibatchGenerator(
-			files, directories, skip, token_map
-		)
-
-		# Run the minibatch generator over the corpus to collect counter_sampler
-		# statistics and to fill out the token_map
-		minibatch_generator.prepare_counter_sampler()
-
-		# We now have a full token_map and the counter_sampler statistics.
-		# Save them if savedir was specified
-		if savedir is not None:
-			token_map.save(os.path.join(savedir, 'token_map.gz'))
-			minibatch_generator.save_counter_sampler(
-				os.path.join(savedir, 'counter_sampler.gz')
-			)
-
-		# Here is where the training actually happens
-		for positive_input, negative_input in minibatch_generator:
-			self.train(positive_input, negative_input)
-
-		# Save the learned embedding (if savedir was specified)
-		if savedir is not None:
-			self.embedder.save(os.path.join(savedir, 'embedding.npz'))
-
-
-	def save(self, savedir):
-		self.token_map.save(os.path.join(savedir, 'token_map.gz'))
-		self.embedder.save(os.path.join(savedir, 'embedding.npz'))
-
-
-	def train(self, positive_input, negative_input):
-		'''
-		Runs the compiled theano training function, using the positive
-		query-context pairs contained in positive_input and the negative
-		query_context pairs contained in negative_input.  Both are expected
-		to be numpy int32-type arrays, with shape (batch_size, 2), each
-		example is a row with two elements: the query-word and the
-		context-word, coded as integers.
-  
-		If the theano training function hasn't been compiled yet (which
-		is true the first time this is called, it compiles it.
-		'''
-		if not hasattr(self, 'train_'):
-			if self.verbose:
-				print 'Compiling training function on first call.'
-			self.train_ = function(
-				inputs=[self.positive_input, self.negative_input], 
-				outputs=self.loss,
-				updates=self.updates
-			)
-
-		return self.train_(positive_input, negative_input)
-
-
-
-
-
-
-def row_dot(matrixA, matrixB):
-	C = (matrixA * matrixB).sum(axis=1)
-	return C
-
-
-#def row_dot(matrixA, matrixB):
-#	C, updates = theano.scan(
-#		fn=lambda x,y: T.dot(x,y),
-#		outputs_info=None,
-#		sequences=[matrixA, matrixB]
-#	)
-#	return C
-
-
-def sigmoid(tensor_var):
-	return 1/(1+T.exp(-tensor_var))
 
 
 class Word2VecEmbedder(object):
@@ -435,10 +123,13 @@ class Word2VecEmbedder(object):
 		num_embedding_dimensions=500,
 		word_embedding_init=Normal(),
 		context_embedding_init=Normal(),
-		dropout=0.
 	):
 
 		self.input_var = input_var
+		self.batch_size = batch_size
+		self.vocabulary_size = vocabulary_size
+		self.num_embedding_dimensions = num_embedding_dimensions
+		self._embed = None
 
 		# Every row (example) in a batch consists of a query word and a 
 		# context word.  We need to learn separate embeddings for each,
@@ -497,6 +188,57 @@ class Word2VecEmbedder(object):
 		self.output = sigmoid(self.match_scores)
 
 
+	def embed(self, token_id):
+		'''
+		Return the vectorspace embedding for the token.
+
+		INPUTS
+		* token [int] or [iterable : int]: Integer representation of a 
+			single token (e.g. a word), or a list of tokens.
+		'''
+		if self._embed is None:
+			self._compile_embed()
+
+		# This function is overloaded to accept a single token_id or 
+		# a list thereof.  Resolve that here.
+		if isinstance(token_id, int):
+			token_ids = [token_id]
+		else:
+			token_ids = token_id
+
+		return self._embed(token_ids)
+
+			
+
+	def _compile_embed(self):
+		'''
+		Compiles the embedding function.  This is a separate theano 
+		function from that used during training of the network, but it
+		produces exactly the same embeddings.  After being compiled
+		once (usually the first time self.embed() is called), it will 
+		remain up-to-date, supplying the correct embeddings even if
+		more training occurs.  This is because it references the same
+		theano shared variables for its embedding parameters as the
+		embedding layer used in training.
+
+		(No Inputs)
+		OUTPUTS
+		* [None]
+		'''
+		input_tokens = T.ivector('token')
+		l_in = lasagne.layers.InputLayer(
+			shape=(None,), input_var=input_tokens
+		)
+		l_emb = lasagne.layers.EmbeddingLayer(
+			incoming=l_in,
+			input_size=self.vocabulary_size, 
+			output_size=self.num_embedding_dimensions, 
+			W=self.l_embed_query.W
+		)
+		embedding = get_output(l_emb)
+		self._embed = function([input_tokens], embedding)
+
+
 	def get_param_values(self):
 		'''
 		returns a list of the trainable parameters *values*, as 
@@ -506,7 +248,6 @@ class Word2VecEmbedder(object):
 			get_all_param_values(self.l_embed_query, trainable=True) +
 			get_all_param_values(self.l_embed_context, trainable=True)
 		)
-
 
 
 	def get_params(self):
@@ -537,5 +278,4 @@ class Word2VecEmbedder(object):
 		W_shared, C_shared = self.get_params()
 		W_shared.set_value(W_loaded)
 		C_shared.set_value(C_loaded)
-
 

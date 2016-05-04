@@ -64,5 +64,8 @@ setup(
 
     # You can just specify the packages manually here if your project is
     # simple. Or you can use find_packages().
-    packages=find_packages(),
+    packages=['word2vec'],
+	package_data={
+		'word2vec':['README.md']
+	}
 )

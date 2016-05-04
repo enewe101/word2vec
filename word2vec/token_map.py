@@ -59,7 +59,6 @@ class TokenMap(object):
 			self.tokens = tokens
 
 
-
 	def add(self, token):
 		try:
 			return self.map[token]
@@ -137,6 +136,4 @@ class TokenMap(object):
 			token = line.strip()
 			self.map[token] = idx
 			self.tokens.append(token)
-
-
 

@@ -1,26 +1,16 @@
 from unigram_dictionary import UnigramDictionary
 from collections import Counter, defaultdict
-from token_map import TokenMap, UNK, SILENT, ERROR
-import re
+from token_map import TokenMap, SILENT, ERROR
 import time
 from unittest import main, TestCase
-import random
-import os
-import sys
-import theano
-import time
-import theano.tensor as T
-from theano import function, scan
-import lasagne
+from theano import tensor as T, function
 import numpy as np
-from lasagne.layers import get_output, InputLayer, EmbeddingLayer
+from w2v import Word2VecEmbedder, word2vec
+from noise_contrast import noise_contrast, NoiseContraster
+from minibatcher import Word2VecMinibatcher, TokenChooser, default_parse
+from counter_sampler import MultinomialSampler, CounterSampler
 from lasagne.init import Normal
-from w2v import Word2VecEmbedder, Word2Vec, noise_contrast, NoiseContraster
-from minibatch_generator import MinibatchGenerator, TokenChooser
-from corpus_reader import CorpusReader
-import t4k
-import Queue
-from counter_sampler import Node, SampleTree, MultinomialSampler, CounterSampler
+
 
 def sigma(a):
 	return 1/(1+np.exp(-a))
@@ -92,8 +82,6 @@ class TestUnigramDictionary(TestCase):
 			self.assertTrue(abs(found_frac - expected_frac) < tolerance)
 
 
-
-
 	def test_unigram_dictionary_token_map(self):
 
 		unigram_dictionary = UnigramDictionary(on_unk=SILENT)
@@ -130,9 +118,9 @@ class TestUnigramDictionary(TestCase):
 		If the unigram_dictionary is constructed passing 
 			on_unk=UnigramDictionary.ERROR
 		then calling get_id() or get_ids() will throw a KeyError if one
-		of the supplied tokens isn't in the unigram_dictionary.  (Normally it 
-		would return 0, which is a token id reserved for 'UNK' -- any
-		unknown token).
+		of the supplied tokens isn't in the unigram_dictionary.  
+		(Normally it would return 0, which is a token id reserved for 
+		'UNK' -- any unknown token).
 		'''
 
 		unigram_dictionary = UnigramDictionary(on_unk=ERROR)
@@ -150,8 +138,8 @@ class TestUnigramDictionary(TestCase):
 
 		unigram_dictionary = UnigramDictionary(on_unk=SILENT)
 
-		# In these assertions, we offset the expected list of ids by
-		# 1 because the 0th id in unigram_dictionary is reserved for the UNK
+		# In these assertions, we offset the expected list of ids by 1 
+		# because the 0th id in unigram_dictionary is reserved for the UNK
 		# token
 
 		# Ensure that update works
@@ -224,10 +212,6 @@ class TestUnigramDictionary(TestCase):
 		)
 
 
-
-
-
-
 	def test_pruning(self):
 
 
@@ -275,8 +259,6 @@ class TestUnigramDictionary(TestCase):
 				self.assertEqual(freq, unk_freq)
 			else:
 				self.assertEqual(freq, self.FREQUENCIES[token])
-
-		
 
 
 
@@ -584,10 +566,6 @@ class TestTokenChooser(TestCase):
 			diff = abs(expected_frequencies[idx] - found_frequencies[idx])
 			self.assertTrue(diff < tolerance)
 
-	
-
-
-
 
 
 class TestCounterSampler(TestCase):
@@ -614,16 +592,20 @@ class TestCounterSampler(TestCase):
 
 	def test_add_function(self):
 		'''
-		Make sure that the add function is working correctly.  CounterSampler
-		stores counts as list, wherein the value at position i of the
-		list encodes the number of counts seen for outcome i.
+		Make sure that the add function is working correctly.  
+		CounterSampler stores counts as list, wherein the value at 
+		position i of the list encodes the number of counts seen for 
+		outcome i.
 
-		Counts are added by passing the outcome's index into CounterSampler.add()
+		Counts are added by passing the outcome's index into 
+		CounterSampler.add()
 		which leads to position i of the counts list to be incremented.
 		If position i doesn't exist, it is created.  If the counts list
 		had only j elements before, and a count is added for position
 		i, with i much greater than j, then many elements are created 
-		between i and j, and are provisionally initialized with zero counts.
+		between i and j, and are provisionally initialized with zero 
+		counts.
+
 		Ensure that is done properly
 		'''
 
@@ -636,10 +618,11 @@ class TestCounterSampler(TestCase):
 		self.assertEqual(counter_sampler.counts, expected_counts)
 
 		# Now ensure the underlying sampler can tolerate a counts list
-		# containing zeros, and that the sampling statistics is as expected.
-		# We expect that the only outcome that should turn up is outcome
-		# 6, since it has all the probability mass.  Check that.
-		counter = Counter(counter_sampler.sample((100000,))) # should be all 6's
+		# containing zeros, and that the sampling statistics is as 
+		# expected.  We expect that the only outcome that should turn up 
+		# is outcome 6, since it has all the probability mass.  Check that.
+		counter = Counter(counter_sampler.sample((100000,))) # should be 
+															 # all 6's
 		total = float(sum(counter.values()))
 		found_normalized = [
 			counter[i] / total for i in range(outcome_to_add+1)
@@ -761,106 +744,6 @@ class TestMultinomialSampler(TestCase):
 		]
 		self.assertTrue(all(close))
 
-
-
-class TestCorpusReader(TestCase):
-
-	def test_read_large(self):
-		'''
-		test basic usage of CorpusReader's read function.  
-		CorpusReader.read() delegates actual I/O to a separate process,
-		here we simply make sure that it returns the same result as we 
-		would get by reading each line in the target file and tokenizing
-		on whitespace.
-		'''
-		
-		reader = CorpusReader(
-			files=['test-data/test-corpus/numbers-long.txt'],
-			verbose=False
-		)
-
-		found_lines = []
-		for line in reader.read_no_q():
-			found_lines.append(line)
-
-		#expected_lines = []
-		#for line in open('test-data/test-corpus/003.tsv'):
-		#	line = line.strip().split()
-		#	expected_lines.append(line)
-
-		#self.assertEqual(found_lines, expected_lines)
-
-	def test_read_basic(self):
-		'''
-		test basic usage of CorpusReader's read function.  
-		CorpusReader.read() delegates actual I/O to a separate process,
-		here we simply make sure that it returns the same result as we 
-		would get by reading each line in the target file and tokenizing
-		on whitespace.
-		'''
-		
-		reader = CorpusReader(
-			files=['test-data/test-corpus/003.tsv'], verbose=False
-		)
-
-		found_lines = []
-		for line in reader.read():
-			found_lines.append(line)
-
-		expected_lines = []
-		for line in open('test-data/test-corpus/003.tsv'):
-			line = line.strip().split()
-			expected_lines.append(line)
-
-		self.assertEqual(found_lines, expected_lines)
-
-
-	def test_read_advanced(self):
-		'''
-		Test that specifying files as a list of filename(s), or as
-		directory/ies works as expected, and that the skip argument
-		is respected.
-		- all files in `files` are processed except those matching
-			a regex in skip
-		- all files directly under `directories` are processed
-			except those matching a regex in skip
-		- files in a subdirectory of `directories` are not processed
-		'''
-
-		# Make a reader, specify files and directores, and define
-		# a skip pattern that matches a file identified by both
-		files = [
-			'test-data/test-corpus/003.tsv', 
-			'test-data/test-corpus/004.tsv'
-		]
-		directories = ['test-data/test-corpus/subdir1']
-		skip = [re.compile('00[23].tsv')]
-		reader = CorpusReader(
-			files=files, directories=directories, skip=skip,
-			verbose=False
-		)
-
-		found_lines = []
-		for line in reader.read():
-			found_lines.append(line)
-
-		files_to_read = [
-			# commented files are identified by the arguments to 
-			# files and directories, but should be skipped
-			# 'test-data/test-corpus/003.tsv', 
-			'test-data/test-corpus/004.tsv',
-			'test-data/test-corpus/subdir1/000.tsv', 
-			'test-data/test-corpus/subdir1/001.tsv', 
-			# 'test-data/test-corpus/subdir1/002.tsv'
-		]
-		expected_lines = []
-		for filename in files_to_read:
-			for line in open(filename):
-				line = line.strip().split()
-				expected_lines.append(line)
-
-
-		self.assertItemsEqual(found_lines, expected_lines)
 
 
 class TestTokenMap(TestCase):
@@ -1004,12 +887,13 @@ class TestNoiseContrast(TestCase):
 		self.assertAlmostEqual(test_loss, expected_loss)
 
 
-class TestMinibatchGenerator(TestCase):
+
+class TestMinibatcher(TestCase):
 
 	def setUp(self):
 
 		# Define some parameters to be used in construction 
-		# MinibatchGenerators
+		# Minibatcher
 		self.files = [
 			'test-data/test-corpus/003.tsv',
 			'test-data/test-corpus/004.tsv'
@@ -1019,7 +903,7 @@ class TestMinibatchGenerator(TestCase):
 		self.t = 0.03
 
 		# Make a minibatch generator
-		self.generator = MinibatchGenerator(
+		self.generator = Word2VecMinibatcher(
 			files=self.files,
 			t=self.t,
 			batch_size=self.batch_size,
@@ -1027,9 +911,9 @@ class TestMinibatchGenerator(TestCase):
 			verbose=False
 		)
 
-		# Make another MinibatchGenerator, and pre-load this one with 
+		# Make another Word2VecMinibatcher, and pre-load this one with 
 		# token_map and counter_sampler distribution information.
-		self.preloaded_generator = MinibatchGenerator(
+		self.preloaded_generator = Word2VecMinibatcher(
 			files=self.files,
 			t=self.t,
 			batch_size=self.batch_size,
@@ -1041,7 +925,7 @@ class TestMinibatchGenerator(TestCase):
 
 	def test_prepare(self):
 		'''
-		Check that MinibatchGenerator.prepare() properly makes a 
+		Check that Word2VecMinibatcher.prepare() properly makes a 
 		UnigramDictionary that reflects the corpus.
 		'''
 		self.generator.prepare()
@@ -1051,7 +935,9 @@ class TestMinibatchGenerator(TestCase):
 		# unigram_dictionary, and that their frequency in the is correct.
 		tokens = []
 		for filename in self.files:
-			tokens.extend(open(filename).read().split())
+			for add_tokens in default_parse(filename):
+				tokens.extend(add_tokens)
+
 		counts = Counter(tokens)
 		for token in tokens:
 			token_id = d.get_id(token)
@@ -1073,9 +959,12 @@ class TestMinibatchGenerator(TestCase):
 		# To do that, first read in the corpus, and break it into lines
 		# and tokens
 		lines = []
+
+		# Go through the corpus and get all the token ids as a list
+		tokenized_lines = []
 		for filename in self.files:
-			lines.extend(open(filename).read().split('\n'))
-		tokenized_lines = [l.split() for l in lines]
+			for tokens in default_parse(filename):
+				tokenized_lines.append(tokens)
 
 		# Now iterate through the lines, noting what tokens arise within
 		# one another's contexts.  Build a lookup table providing the set
@@ -1118,10 +1007,11 @@ class TestMinibatchGenerator(TestCase):
 		# Go through the corpus and get all the token ids as a list
 		token_ids = []
 		for filename in self.files:
-			token_ids.extend(d.get_ids(open(filename).read().split()))
+			for tokens in default_parse(filename):
+				token_ids.extend(d.get_ids(tokens))
 
 		# Run through the tokens, evaluating 
-		# MinibatchGenerator.do_discard() on each.  Keep track of all 
+		# Word2VecMinibatcher.do_discard() on each.  Keep track of all 
 		# "discarded" tokens for which do_discard() returns True
 		discarded = []
 		num_replicates = 100
@@ -1159,6 +1049,7 @@ class TestMinibatchGenerator(TestCase):
 		)
 
 
+
 class TestWord2VecOnCorpus(TestCase):
 	'''
 	This tests the Word2Vec end-to-end functionality applied to a text 
@@ -1166,75 +1057,20 @@ class TestWord2VecOnCorpus(TestCase):
 	'''
 
 	def test_word2vec_on_corpus(self):
+
 		# Seed randomness to make the test reproducible
 		np.random.seed(1)
-		verbose = False
 
-		batch_size = 10
-
-		#print 'making minibatch generator'
-		# Make a minibatch generator
-		minibatch_generator = MinibatchGenerator(
+		word2vec_embedder, dictionary = word2vec(
 			files=['test-data/test-corpus/numbers-long.txt'],
-			t=1, batch_size=batch_size,
-			verbose=False
-		)
-
-		# Prepare it
-		minibatch_generator.prepare()
-		
-		# Make a Word2Vec object
-		#print 'making word2vec'
-		word2vec = Word2Vec(
-			batch_size=batch_size,
-			vocabulary_size=minibatch_generator.get_vocab_size(),
+			num_epochs=1,
+			t=1, 
+			batch_size = 10,
 			num_embedding_dimensions=5,
-			verbose=False
+			verbose=False,
 		)
 
-		# Call word2vec.train() on dummy data just so that it compiles the
-		# training function, because we don't want to include it in the
-		# timing
-		#print 'compiling'
-		word2vec.train(
-			np.full((batch_size, 2), UNK, dtype='int32'),
-			np.full(
-				(batch_size*minibatch_generator.noise_ratio, 2), 
-				UNK, dtype='int32'
-			)
-		)
-
-		# Train the word2vec over the corpus with 5 epochs
-		num_epochs=1
-		time_on_batching = 0
-		time_on_training = 0
-		#print 'starting training'
-		for epoch in range(num_epochs):
-
-			start_batch = time.time()
-			for i, (signal_batch, noise_batch) in enumerate(
-				minibatch_generator.generate()
-			):
-
-				if i % int(round(31488 * 3/float(5*batch_size)))==0:
-					#print i * batch_size
-					if verbose:
-						print 'training time:', time_on_training
-						print 'batching time:', time_on_batching
-
-				time_on_batching += time.time() - start_batch
-				start_train = time.time()
-				word2vec.train(signal_batch, noise_batch)
-				time_on_training += time.time() - start_train
-				start_batch = time.time()
-
-		total_time = time_on_training + time_on_batching
-		if verbose:
-			print 'total training time:', time_on_training
-			print 'total batching time:', time_on_batching
-			print '% time spent batching:', time_on_batching * 100 / total_time
-
-		W, C = word2vec.get_param_values()
+		W, C = word2vec_embedder.get_param_values()
 		dots = usigma(np.dot(W,C.T))
 
 		# Based on the construction of the corpus, the following 
@@ -1266,19 +1102,19 @@ class TestWord2VecOnCorpus(TestCase):
 			top3_positions = [t[0] for t in top3]
 			self.assertItemsEqual(top3_positions, expected_tops[i-1])
 
-
+		print repr(word2vec_embedder.embed([1,2,3,4]))
 
 
 
 
 class TestWord2Vec(TestCase):
+
 	'''
 	This tests comnponent Word2Vec functionality by supplying 
 	synthetic numerical data into its components, to make sure that 
 	the solutions are mathematically correct.  It doesn't test iteration
 	over an actual text corpus, which is tested by TestWord2VecOnCorpus.
 	'''
-
 
 	def setUp(self):
 
@@ -1343,11 +1179,6 @@ class TestWord2Vec(TestCase):
 		)
 
 		W, C = embedder.get_param_values()
-
-		#print type(W), type(C)
-
-		#print W
-		#print C
 
 
 	def test_noise_contrastive_learning(self):
@@ -1417,11 +1248,11 @@ class TestWord2Vec(TestCase):
 			#print '\t***'
 			for epoch in range(num_epochs):
 
-				# Sample new noise examples every epoch (this is better than
-				# fixing the noise once at the start).
+				# Sample new noise examples every epoch (this is better 
+				# than fixing the noise once at the start).
 				# Provide 15 negative examples for each query word
 				test_negative_input = np.array([
-					[i / 10, random.randint(0,9)] for i in range(100)
+					[i / 10, np.random.randint(0,10)] for i in range(100)
 				]).astype('int32')
 
 				loss = train(
@@ -1470,180 +1301,182 @@ class TestWord2Vec(TestCase):
 
 
 
-	def test_learning(self):
+	# TODO: re-implement this test without the defunct Word2Vec class
+	#def test_learning(self):
 
-		positive_input = T.imatrix('query_input')
-		negative_input = T.imatrix('noise_input')
+	#	positive_input = T.imatrix('query_input')
+	#	negative_input = T.imatrix('noise_input')
 
-		# Predifine the size of batches and the embedding
-		batch_size = 160
-		vocab_size = 10
-		num_embedding_dimensions = 5
+	#	# Predifine the size of batches and the embedding
+	#	batch_size = 160
+	#	vocab_size = 10
+	#	num_embedding_dimensions = 5
 
-		# Make a Word2Vec object
-		word2vec = Word2Vec(
-			batch_size,
-			vocabulary_size=vocab_size,
-			num_embedding_dimensions=num_embedding_dimensions,
-			learning_rate=0.1,
-			verbose=False
-		)
+	#	# Make a Word2Vec object
+	#	word2vec = Word2Vec(
+	#		batch_size,
+	#		vocabulary_size=vocab_size,
+	#		num_embedding_dimensions=num_embedding_dimensions,
+	#		learning_rate=0.1,
+	#		verbose=False
+	#	)
 
-		# Make the positive input.  First component of each example is
-		# the query input, and second component is the context.  In the 
-		# final embeddings that are learned, dotting these rows and columns
-		# respectively from the query and context embedding matrices should
-		# give higher values than any other row-column dot products.
-		test_positive_input = np.array([
-			[0,2],
-			[1,3],
-			[2,0],
-			[3,1],
-			[4,6],
-			[5,7],
-			[6,4],
-			[7,5],
-			[8,9],
-			[9,8]
-		]).astype('int32')
-		
-		num_replicates = 5
-		num_epochs = 3000
-		embedding_products = []
-		W, C = word2vec.get_params()
-		start = time.time()
-		for rep in range(num_replicates):
-			W.set_value(np.random.normal(
-				0, 0.01, (vocab_size, num_embedding_dimensions)
-			).astype(dtype='float32'))
-			C.set_value(np.random.normal(
-				0, 0.01, (vocab_size, num_embedding_dimensions)
-			).astype('float32'))
-			#print '\t***'
-			for epoch in range(num_epochs):
+	#	# Make the positive input.  First component of each example is
+	#	# the query input, and second component is the context.  In the 
+	#	# final embeddings that are learned, dotting these rows and columns
+	#	# respectively from the query and context embedding matrices should
+	#	# give higher values than any other row-column dot products.
+	#	test_positive_input = np.array([
+	#		[0,2],
+	#		[1,3],
+	#		[2,0],
+	#		[3,1],
+	#		[4,6],
+	#		[5,7],
+	#		[6,4],
+	#		[7,5],
+	#		[8,9],
+	#		[9,8]
+	#	]).astype('int32')
+	#	
+	#	num_replicates = 5
+	#	num_epochs = 3000
+	#	embedding_products = []
+	#	W, C = word2vec.get_params()
+	#	start = time.time()
+	#	for rep in range(num_replicates):
+	#		W.set_value(np.random.normal(
+	#			0, 0.01, (vocab_size, num_embedding_dimensions)
+	#		).astype(dtype='float32'))
+	#		C.set_value(np.random.normal(
+	#			0, 0.01, (vocab_size, num_embedding_dimensions)
+	#		).astype('float32'))
+	#		#print '\t***'
+	#		for epoch in range(num_epochs):
 
-				# Sample new noise examples every epoch (this is better than
-				# fixing the noise once at the start).
-				# Provide 15 negative examples for each query word
-				test_negative_input = np.array([
-					[i / 10, random.randint(0,9)] for i in range(100)
-				]).astype('int32')
+	#			# Sample new noise examples every epoch (this is better than
+	#			# fixing the noise once at the start).
+	#			# Provide 15 negative examples for each query word
+	#			test_negative_input = np.array([
+	#				[i / 10, random.randint(0,9)] for i in range(100)
+	#			]).astype('int32')
 
-				loss = word2vec.train(
-					test_positive_input, test_negative_input
-				)
-				#print loss
+	#			loss = word2vec.train(
+	#				test_positive_input, test_negative_input
+	#			)
+	#			#print loss
 
-			embedding_product = np.dot(W.get_value(), C.get_value().T)
-			embedding_products.append(usigma(embedding_product))
+	#		embedding_product = np.dot(W.get_value(), C.get_value().T)
+	#		embedding_products.append(usigma(embedding_product))
 
-		mean_embedding_products = np.mean(embedding_products, axis=0)
-		#print np.round(mean_embedding_products, 2)
+	#	mean_embedding_products = np.mean(embedding_products, axis=0)
+	#	#print np.round(mean_embedding_products, 2)
 
-		# We expect that the embeddings will allocate the most probability
-		# to the contexts that were provided for words in the toy data.
-		# We always provided a single context via batch_contexts 
-		# (e.g. context 2 provided for word 0), so we expect these contexts
-		# to be the maximum.
-		expected_max_prob_contexts = test_positive_input[:,1]
-		self.assertTrue(np.array_equal(
-			np.argmax(mean_embedding_products, axis=1),
-			expected_max_prob_contexts
-		))
+	#	# We expect that the embeddings will allocate the most probability
+	#	# to the contexts that were provided for words in the toy data.
+	#	# We always provided a single context via batch_contexts 
+	#	# (e.g. context 2 provided for word 0), so we expect these contexts
+	#	# to be the maximum.
+	#	expected_max_prob_contexts = test_positive_input[:,1]
+	#	self.assertTrue(np.array_equal(
+	#		np.argmax(mean_embedding_products, axis=1),
+	#		expected_max_prob_contexts
+	#	))
 
-		# The dot product of a given word embedding and context embedding
-		# have an interpretation as the probability that that word and
-		# context derived from the toy data instead of the noise.
-		# See equation 3 in Noise-Contrastive Estimation of Unnormalized 
-		# Statistical Models, with Applications to Natural Image 
-		# StatisticsJournal of Machine Learning Research 13 (2012), 
-		# pp.307-361.
-		# That shows the probability should be around 0.5
-		# Since the actual values are stocastic, we check that the 
-		# average of repeated trials is within 0.25 - 0.75.
-		embedding_maxima = np.max(mean_embedding_products, axis=1)
-		self.assertTrue(all(
-			[x > 0.25 for x in embedding_maxima]
-		))
-		self.assertTrue(all(
-			[x < 0.75 for x in embedding_maxima]
-		))
-		#print 'average weight to correct pairs:', np.mean(
-		#	embedding_maxima
-		#)
-		#print 'elapsed time:', time.time() - start
+	#	# The dot product of a given word embedding and context embedding
+	#	# have an interpretation as the probability that that word and
+	#	# context derived from the toy data instead of the noise.
+	#	# See equation 3 in Noise-Contrastive Estimation of Unnormalized 
+	#	# Statistical Models, with Applications to Natural Image 
+	#	# StatisticsJournal of Machine Learning Research 13 (2012), 
+	#	# pp.307-361.
+	#	# That shows the probability should be around 0.5
+	#	# Since the actual values are stocastic, we check that the 
+	#	# average of repeated trials is within 0.25 - 0.75.
+	#	embedding_maxima = np.max(mean_embedding_products, axis=1)
+	#	self.assertTrue(all(
+	#		[x > 0.25 for x in embedding_maxima]
+	#	))
+	#	self.assertTrue(all(
+	#		[x < 0.75 for x in embedding_maxima]
+	#	))
+	#	#print 'average weight to correct pairs:', np.mean(
+	#	#	embedding_maxima
+	#	#)
+	#	#print 'elapsed time:', time.time() - start
 
 
-	def test_positive_negative_separation(self):
+	# TODO: re-implement this test without the defunct Word2Vec class
+	#def test_positive_negative_separation(self):
 
-		vocabulary_size=100000,
-		num_embedding_dimensions=500,
-		word_embedding_init=Normal(), 
-		context_embedding_init=Normal(),
+	#	vocabulary_size=100000,
+	#	num_embedding_dimensions=500,
+	#	word_embedding_init=Normal(), 
+	#	context_embedding_init=Normal(),
 
-		embedder = Word2Vec(
-			batch_size=len(self.TEST_INPUT),
-			vocabulary_size=self.VOCAB_SIZE,
-			num_embedding_dimensions=self.NUM_EMBEDDING_DIMENSIONS,
-			word_embedding_init=self.QUERY_EMBEDDING,
-			context_embedding_init=self.CONTEXT_EMBEDDING
-		)
+	#	embedder = Word2Vec(
+	#		batch_size=len(self.TEST_INPUT),
+	#		vocabulary_size=self.VOCAB_SIZE,
+	#		num_embedding_dimensions=self.NUM_EMBEDDING_DIMENSIONS,
+	#		word_embedding_init=self.QUERY_EMBEDDING,
+	#		context_embedding_init=self.CONTEXT_EMBEDDING
+	#	)
 
-		# Get Word2Vec's internal symbolic theano variables
-		positive_input = embedder.positive_input
-		negative_input = embedder.negative_input
-		positive_output = embedder.positive_output
-		negative_output = embedder.negative_output
+	#	# Get Word2Vec's internal symbolic theano variables
+	#	positive_input = embedder.positive_input
+	#	negative_input = embedder.negative_input
+	#	positive_output = embedder.positive_output
+	#	negative_output = embedder.negative_output
 
-		# Compile the function connecting the symbolic inputs and outputs
-		# So that we can test the separation of the signal and noise 
-		# channels after they are processed by the underlying 
-		# Word2VecEmbedder
-		f = function(
-			[positive_input, negative_input],
-			[positive_output, negative_output]
-		)
+	#	# Compile the function connecting the symbolic inputs and outputs
+	#	# So that we can test the separation of the signal and noise 
+	#	# channels after they are processed by the underlying 
+	#	# Word2VecEmbedder
+	#	f = function(
+	#		[positive_input, negative_input],
+	#		[positive_output, negative_output]
+	#	)
 
-		# Calculate the positive and negative output
-		test_positive_input = self.TEST_INPUT[:6]
-		test_negative_input = self.TEST_INPUT[6:]
-		test_positive_output, test_negative_output = f(
-			test_positive_input, test_negative_input
-		)
+	#	# Calculate the positive and negative output
+	#	test_positive_input = self.TEST_INPUT[:6]
+	#	test_negative_input = self.TEST_INPUT[6:]
+	#	test_positive_output, test_negative_output = f(
+	#		test_positive_input, test_negative_input
+	#	)
 
-		# Calculate the expected embeddings and output
-		expected_query_embeddings = np.repeat(
-			self.QUERY_EMBEDDING, 3, axis=0
-		)
-		expected_context_embeddings = np.tile(
-			self.CONTEXT_EMBEDDING, (3,1)
-		)
-		expected_output = usigma(np.dot(
-			expected_query_embeddings, expected_context_embeddings.T
-		)).diagonal()
-		expected_positive_output = expected_output[:6]
-		expected_negative_output = expected_output[6:]
+	#	# Calculate the expected embeddings and output
+	#	expected_query_embeddings = np.repeat(
+	#		self.QUERY_EMBEDDING, 3, axis=0
+	#	)
+	#	expected_context_embeddings = np.tile(
+	#		self.CONTEXT_EMBEDDING, (3,1)
+	#	)
+	#	expected_output = usigma(np.dot(
+	#		expected_query_embeddings, expected_context_embeddings.T
+	#	)).diagonal()
+	#	expected_positive_output = expected_output[:6]
+	#	expected_negative_output = expected_output[6:]
 
-		#print 'test_positive_output:'
-		#print test_positive_output
-		#print
-		#print 'expected_positive_output:'
-		#print expected_positive_output
-		#print
-		#print 'test_negative_output:'
-		#print test_negative_output
-		#print 
-		#print 'expected_negative_output:'
-		#print expected_negative_output
-		#print 
+	#	#print 'test_positive_output:'
+	#	#print test_positive_output
+	#	#print
+	#	#print 'expected_positive_output:'
+	#	#print expected_positive_output
+	#	#print
+	#	#print 'test_negative_output:'
+	#	#print test_negative_output
+	#	#print 
+	#	#print 'expected_negative_output:'
+	#	#print expected_negative_output
+	#	#print 
 
-		# Check for equality between all found and expected values
-		self.assertTrue(np.allclose(
-			test_positive_output, expected_positive_output
-		))
-		self.assertTrue(np.allclose(
-			test_negative_output, expected_negative_output
-		))
+	#	# Check for equality between all found and expected values
+	#	self.assertTrue(np.allclose(
+	#		test_positive_output, expected_positive_output
+	#	))
+	#	self.assertTrue(np.allclose(
+	#		test_negative_output, expected_negative_output
+	#	))
 
 
 	def test_Word2VecEmbedder(self):
@@ -1709,6 +1542,7 @@ class TestWord2Vec(TestCase):
 			context_embeddings, expected_context_embeddings
 		))
 		self.assertTrue(np.allclose(test_output, expected_output))
+
 
 
 if __name__=='__main__': 

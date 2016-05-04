@@ -1,10 +1,9 @@
-from w2v import (
-	Word2Vec, Word2VecEmbedder, noise_contrast, NoiseContraster, sigmoid, 
-	row_dot
-)
-from corpus_reader import CorpusReader, default_parse 
+from noise_contrast import noise_contrast, NoiseContraster
+from w2v import word2vec, sigmoid, row_dot, Word2VecEmbedder
 from token_map import TokenMap
-from minibatch_generator import MinibatchGenerator, TokenChooser
+from minibatcher import (
+	Minibatcher, Word2VecMinibatcher, TokenChooser, default_parse
+)
 from counter_sampler import (
 	CounterSampler, CounterSamplerException, MultinomialSampler
 )

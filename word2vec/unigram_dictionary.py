@@ -6,7 +6,7 @@ unigram distribution.
 '''
 
 import os
-from token_map import TokenMap, SILENT, WARN, ERROR, UNK
+from token_map import TokenMap, SILENT, ERROR, UNK
 from counter_sampler import CounterSampler
 
 class UnigramDictionary(object):

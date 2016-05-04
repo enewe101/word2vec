@@ -10,8 +10,6 @@ by auto-incrementing from 0
 would be wasted)
 '''
 
-import numpy.random as r
-import Queue
 import numpy as np
 import gzip
 
@@ -114,11 +112,6 @@ class CounterSampler(object):
 
 
 
-class Node(dict):
-	def __cmp__(self, other):
-		return cmp(self['count'], other['count'])
-
-
 class MultinomialSampler(object):
 
 	def __init__(self, scores):
@@ -197,75 +190,12 @@ class MultinomialSampler(object):
 	def _sample(self):
 
 		# Draw from the overall uniform mixture.
-		k = np.int64(int(np.floor(r.rand()*self.K)))
+		k = np.int64(int(np.floor(np.random.rand()*self.K)))
 	 
 		# Draw from the binary mixture, either keeping the
 		# small one, or choosing the associated larger one.
-		if r.rand() < self.mixture_prob_mass[k]:
+		if np.random.rand() < self.mixture_prob_mass[k]:
 			return k
 		else:
 			return self.mass_reasignments[k]
- 
-
-
-class SampleTree(object):
-
-	def __init__(self, counts):
-		self.counts = counts
-		self.root = self.build_tree()
-
-
-
-	def build_tree(self):
-
-		# Make leaf nodes for every token count, and put them in the 
-		# Queue
-		q = Queue.PriorityQueue()
-		for idx, count in enumerate(self.counts):
-			node = Node([
-				('count',count),
-				('id', idx),
-				('left',None),
-				('right',None),
-				('prob-left',None)
-			])
-			q.put(node)
-
-
-		while True:
-
-			# Take two nodes from the queue
-			left = q.get()
-
-			# There might only be one node left
-			try:
-				right = q.get(block=False) 
-			except Queue.Empty:
-				break
-
-			# Make a node representing the merging of these
-			total_count = left['count']+right['count']
-			parent = Node([
-				('count', total_count),
-				('prob-left', left['count'] / float(total_count)),
-				('id',None),
-				('left', left),
-				('right', right)
-			])
-
-			# Now put the merged node itself onto the queue
-			q.put(parent)
-
-		# When there's just one node left, it represents the root
-		# It will serve as a handle to the tree
-		root = left
-		return root
-
-
-
-
-
-
-
-
 
