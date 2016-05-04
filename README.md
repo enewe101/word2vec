@@ -5,7 +5,7 @@
 The simplest way to train a word2vec embedding:
 ```python
 >>> from word2vec import word2vec
->>> word2vec_embedder, dictionary = word2vec(files=['corpus/file1.txt', 'corpus/file2.txt'])
+>>> embedder, dictionary = word2vec(files=['corpus/file1.txt', 'corpus/file2.txt'])
 ```
 Where the input files should be formatted with one sentence per line, with
 tokens space-separated.
@@ -21,23 +21,40 @@ The `word2vec()` function exposes most of the basic parameters appearing
 in Mikolov's skip-gram model based on noise contrastive estimation:
 ```python
 >>> embedder, dictionary = word2vec(
-	savedir='data/my-embedding',		# directory in which to save embedding parameters (deepest directory will be created if it doesn't exist)
-	files=['corpus/file1.txt', corpus/file2.txt'],	# List of files comprising the corpus
-	directories=['corpus', 'corpus/additional']	# List of directories whose directly-contained files comprise the corpus (you may combine files and directories)
-	skip=[re.compile('*.bk$'), re.compile('exclude-from-corpus')],	# matching files and directories will be excluded
-	num_epochs=5,				# Number of passes through training corpus
-	unigram_dictionary=preexisting_dictionary,	# Specify the dictionary (will be created if not supplied; maps words to ids and tracks word frequencies)
-	noise_ratio=15,				# Number of "noise" examples for every signal example
-	kernel=[1,2,3,3,2,1],		# Relative probability of sampling context words, assumed symettrically surrounding query word
-	t=1.0e-5,				# Threshold used in calculating discard-probability for very common words
-	batch_size = 1000		# Size of minibatches during training
-	num_embedding_dimensions = 500, # Dimensionality of the embedding vector space 
-	word_embedding_init=lasagne.init.Normal(),	# Initializer for embedding parameters (can be a numpy array too)
-	context_embedding_init=lasagne.init.Normal(),	# Initializer for context embedding parameters (can be numpy array)
-	learning_rate = 0.1,	# Size of stochastic gradient descent steps during training
-	momentum=0.9,		# Amount of Nesterov momentum during training
-	verbose=True		# Print messages during training
-	num_example_generators=3	# Number of parrallel corpus-reading processes used to generate minibatches
+...		# directory in which to save embedding parameters (deepest directory will be created if it doesn't exist)
+...		savedir='data/my-embedding',
+...		# List of files comprising the corpus
+...		files=['corpus/file1.txt', 'corpus/file2.txt'],	
+...		# Include whole directories of files (deep files not included)
+...		directories=['corpus', 'corpus/additional'],
+...		# Indicate files to exclude using regexes
+...		skip=[re.compile('*.bk$'), re.compile('exclude-from-corpus')],	
+...		# Number of passes through training corpus
+...		num_epochs=5,				
+...		# Specify the mapping from tokens to ints (else create it automatically)
+...		unigram_dictionary=preexisting_dictionary,	
+...		# Number of "noise" examples included for every "signal" example
+...		noise_ratio=15,	
+...		# Relative probability of skip-gram sampling centered on query word
+...		kernel=[1,2,3,3,2,1],		
+...		# Threshold used to calculate discard-probability for query words
+...		t=1.0e-5,				
+...		# Size of minibatches during training
+...		batch_size = 1000,
+...		# Dimensionality of the embedding vector space 
+...		num_embedding_dimensions = 500, 
+...		# Initializer for embedding parameters (can be a numpy array too)
+...		word_embedding_init=lasagne.init.Normal(),	
+...		# Initializer for context embedding parameters (can be numpy array)
+...		context_embedding_init=lasagne.init.Normal(),	
+...		# Size of stochastic gradient descent steps during training
+...		learning_rate = 0.1,	
+...		# Amount of Nesterov momentum during training
+...		momentum=0.9,		
+...		# Print messages during training
+...		verbose=True,
+...		# Number of parrallel corpus-reading processes 
+...		num_example_generators=3	
 )
 ```
 
