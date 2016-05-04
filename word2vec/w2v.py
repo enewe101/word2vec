@@ -108,7 +108,8 @@ def word2vec(
 		embedings_filename = os.path.join(savedir, 'embeddings.npz')
 		word2vec_embedder.save(embeddings_filename)
 
-	# Return the trained word2vec_embedder
+	# Return the trained word2vec_embedder and the dictionary mapping tokens
+	# to ids
 	return word2vec_embedder, minibatcher.unigram_dictionary
 
 

@@ -1,6 +1,29 @@
-# Theano-word2vec
+# theano-word2vec
+An implementation of Mikolov's word2vec in Python using Theano and Lasagne.
+
+## About this package
+This package has been written with care for modularity of it's components, 
+with the hope that they will be re-usable in creating variations on standard
+word2vec.  Soon I'll provide full documentation with guidelines on 
+customization and extension, as well as a tour of how the package is setup.
+For now, please enjoy this quickstart guide
 
 ## Quickstart
+
+### Install
+Install from the Python Package Index:
+```bash
+pip install theano-word2vec
+```
+
+Alternatively, install a version you can hack on:
+```bash
+git clone https://github.com/enewe101/word2vec.git
+cd word2vec
+python setup.py develop
+```
+
+### Use
 
 The simplest way to train a word2vec embedding:
 ```python
