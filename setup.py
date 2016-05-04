@@ -23,7 +23,7 @@ setup(
 	# single-sourcing
     # the version across setup.py and the project code, see
     # https://packaging.python.org/en/latest/single_source_version.html
-    version='0.1.3',
+    version='0.1.5',
 
     description='word2vec using Theano and Lasagne',
     long_description=long_description,
@@ -66,6 +66,9 @@ setup(
     # simple. Or you can use find_packages().
     packages=['word2vec'],
 	package_data={
-		'word2vec':['README.md']
-	}
+		'word2vec': ['README.md']
+	},
+	install_requires=[
+		'numpy', 'scipy', 'theano', 'lasagne', 'iterable-queue', 
+	]
 )
