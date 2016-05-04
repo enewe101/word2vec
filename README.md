@@ -6,7 +6,7 @@ This package has been written with care for modularity of it's components,
 with the hope that they will be re-usable in creating variations on standard
 word2vec.  Soon I'll provide full documentation with guidelines on 
 customization and extension, as well as a tour of how the package is setup.
-For now, please enjoy this quickstart guide
+For now, please enjoy this quickstart guide.
 
 ## Quickstart
 
