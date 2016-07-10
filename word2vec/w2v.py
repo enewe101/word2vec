@@ -168,15 +168,10 @@ class Word2VecEmbedder(object):
 
 		# We now combine the query and context embeddings, taking the 
 		# dot product between corresponding queries and contexts.  
-		# We can express this as matrix multiplication: if we multiply
-		# the query embeddings (a matrix) with the transposed context
-		# embeddings (also a matrix), the elements of the result give
-		# the dot prodcuts of all context embeddings with all query
-		# embeddings.  We only want the dot products for the queries
-		# and contexts that came from the same example (not the dot products
-		# formed by all pairs), which we can obtain by selecting the 
-		# diagonal from the result.  Hopefully theano's optimizations are
-		# smart enough to only calculate the needed dot products.
+		# We can express this as an element-wise multiplication between
+		# the array of all query embeddings with all context embeddings
+		# Summing along the rows of the resulting matrix yields the dot
+		# product for each query-context pair.
 		self.match_scores = row_dot(
 			self.query_embedding,
 			self.context_embedding
