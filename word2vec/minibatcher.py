@@ -4,7 +4,9 @@ from counter_sampler import MultinomialSampler
 from token_map import UNK
 from unigram_dictionary import UnigramDictionary
 import numpy as np
+from theano import shared
 import os
+import sys
 
 
 def default_parse(filename):
@@ -12,6 +14,25 @@ def default_parse(filename):
 	for line in open(filename):
 		tokenized_sentences.append(line.strip().split())
 	return tokenized_sentences
+
+
+MAX_NUMPY_SEED = 4294967295
+def reseed():
+	'''
+	Makes a hop in the random chain.  
+	
+	If called before spawning a child processes, it will ensure each child
+	generates different random numbers.  Unlike seeding child randomness
+	from an os source of randomness, this will produce globally consistent
+	results when the parent starts with the same random seed.
+
+	In other words, child processes will all have different random chains
+	but the *particular* random chains they have is deterministic and
+	reproducible when the parent process randomness is seeded to the same
+	value.  So child processes have samples that are independent from one
+	another, but reproducible by controlling the seed of the parent process.
+	'''
+	np.random.seed(np.random.randint(MAX_NUMPY_SEED))
 
 
 class Minibatcher(object):
@@ -251,6 +272,7 @@ class Minibatcher(object):
 			example.
 		'''
 
+		self.cur_file = filename
 		parsed = self.parse(filename)
 		examples = self.build_examples(parsed)
 		for example in examples:
@@ -366,7 +388,7 @@ class Minibatcher(object):
 		consume large amounts of memory.
 
 		(no INPUTS)
-		
+
 		OUTPUTS
 		* [list : [iterable]]: A list of minibatches.
 		'''
@@ -425,6 +447,7 @@ class Minibatcher(object):
 		# deterministically in order through the corpus  Ideally examples
 		# should be totally shuffled..
 
+
 		file_queue = IterableQueue()
 		example_queue = IterableQueue()
 		minibatch_queue = IterableQueue()
@@ -438,6 +461,10 @@ class Minibatcher(object):
 		# Make processes that process the files and put examples onto
 		# the example queue
 		for i in range(self.num_example_generators):
+
+			# These calls to np.random are a hack to ensure that each
+			# child example-generating process gets different randomness
+			reseed()
 			Process(target=self.generate_examples_async, args=(
 				file_queue.get_consumer(),
 				example_queue.get_producer()
@@ -458,14 +485,6 @@ class Minibatcher(object):
 		file_queue.close()
 		example_queue.close()
 		minibatch_queue.close()
-
-		# This is necessary because accessing randomness in the child 
-		# processes doesn't advance the random state here in the parent
-		# process, which would, mean that the exact same minibatch sequence 
-		# would being generated on subsequent calls to `__iter__()`, which 
-		# is not desired.  The simplest solution is to advance the 
-		# random state by sampling randomness once.
-		np.random.uniform()
 
 		# Return the minibatch_consumer as the iterator
 		return self.minibatch_consumer
@@ -488,7 +507,7 @@ class Minibatcher(object):
 		The indexing that causes the symbolic minibatch to address different
 		parts of the dataset is itself a shared variable, and it can be
 		updated using an update tuple provided to the updates list of a
-		theanod function.  The necessary update tuple is also provided as 
+		theano function.  The necessary update tuple is also provided as 
 		a return value, so that it can be incorporated into the training
 		function
 		'''
@@ -496,21 +515,23 @@ class Minibatcher(object):
 		# Load the entire dataset into RAM.  
 		# Use the async_batch_iterator to allow multiple read processes.
 		dataset = []
+		num_batches = 0
 		for minibatch in self.get_async_batch_iterator():
 			dataset.extend(minibatch)
+			num_batches += 1
 
 		# Now move the dataset onto GPU (into GRAM).
-		loaded_dataset = theano.shared(dataset)
+		loaded_dataset = shared(dataset)
 
 		# Define a symbolic variable representing a single minibatch
-		i = theano.shared(0)
+		i = shared(0)
 		X = loaded_dataset[i : i+batch_size,]
 
 		# Define updates that causes the minibatch window to move
 		updates = [(i, i+batch_size)]
 
 		# Return the symbolic minibatch and the updates
-		return X, updates
+		return X, updates, num_batches
 
 
 	def __iter__(self):
@@ -689,32 +710,41 @@ class Word2VecMinibatcher(Minibatcher):
 		function
 		'''
 
-		# Load the entire dataset into RAM.  
+		# Load the entire dataset into RAM, converting to a numpy array.  
 		# Use the async_batch_iterator to allow multiple read processes.
 		dataset = []
+		num_batches = 0
 		for signal_batch, noise_batch in self.get_async_batch_iterator():
 			dataset.extend(signal_batch)
 			dataset.extend(noise_batch)
+			num_batches += 1
+		dataset = np.array(dataset, dtype='int32')
 
 		# Now move the dataset onto GPU (into GRAM).
-		loaded_dataset = theano.shared(dataset)
+		loaded_dataset = shared(dataset)
 
-		# Define a symbolic variable representing a single minibatch
-		i = theano.shared(0)
+		# Define a the minibatch window indexing around a shared
+		# variable, i, which tracks minibatch iteration
+		i = shared(0)
 		window_size = self.batch_size * (self.noise_ratio + 1)
-		signal_start = i * windowsize
+		signal_start = i * window_size
 		signal_end = signal_start + self.batch_size
 		noise_start = signal_end
-		noise_end = noise_start + self.batchsize * self.noise_ratio
+		noise_end = noise_start + self.batch_size * self.noise_ratio
 
+		# Define a symbolic minibatch in terms of the full dataset
+		# using the window indexing
 		symbolic_signal_batch = loaded_dataset[signal_start : signal_end,]
 		symbolic_noise_batch = loaded_dataset[noise_start : noise_end,]
 
-		# Define updates that causes the minibatch window to move
+		# Define an update that increments the minibatch
 		updates = [(i, i+1)]
 
 		# Return the symbolic minibatch and the updates
-		return symbolic_signal_batch, symbolic_noise_batch, updates
+		return (
+			symbolic_signal_batch, symbolic_noise_batch, 
+			updates, num_batches
+		)
 
 
 	def init_batch(self):

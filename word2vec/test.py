@@ -900,6 +900,7 @@ class TestMinibatcher(TestCase):
 		]
 		self.batch_size = 5
 		self.noise_ratio = 15
+		self.num_example_generators = 3
 		self.t = 0.03
 
 		# Make a minibatch generator
@@ -908,7 +909,8 @@ class TestMinibatcher(TestCase):
 			t=self.t,
 			batch_size=self.batch_size,
 			noise_ratio=self.noise_ratio,
-			verbose=False
+			verbose=False,
+			num_example_generators=self.num_example_generators
 		)
 
 		# Make another Word2VecMinibatcher, and pre-load this one with 
@@ -918,7 +920,8 @@ class TestMinibatcher(TestCase):
 			t=self.t,
 			batch_size=self.batch_size,
 			noise_ratio=self.noise_ratio,
-			verbose=False
+			verbose=False,
+			num_example_generators=self.num_example_generators
 		)
 		self.preloaded_generator.load('test-data/minibatch-generator-test')
 
@@ -943,6 +946,123 @@ class TestMinibatcher(TestCase):
 			token_id = d.get_id(token)
 			count = d.get_frequency(token_id)
 			self.assertEqual(count, counts[token])
+
+
+	def test_unique_minibatch_noise(self):
+		'''
+		A bug was discovered whereby, when batches are yielded via the
+		asynchronous method (i.e. via the iterator returned by 
+		Minibatcher.get_async_batch_iterator()), different example
+		generating processes will generate the same sequence of noise 
+		contexts, because each example generating process inherits the
+		same numpy random number generating state.  This test exposes the 
+		but, so that it could be fixed.
+		'''
+
+		# Ensure reproducibility in this stochastic test
+		np.random.seed(1)
+
+		# Iterate through all examples in the dataset.  Look at each of
+		# the noise examples generated.  Each query word should have 
+		# noise_ratio number of noise contexts generated.  No two 
+		# query words should get the same sequence of noise sequences, 
+		# which is what we want to test.  Collect the sequence of noise
+		# contexts for each query word, and check they are unique
+		noise_sequences = set()
+		last_query = None
+		for signal_batch, noise_batch in self.preloaded_generator:
+			for row in noise_batch:
+
+				query, context = row
+
+				# So long as teh query remains constant, we bundle all
+				# of the contexts associated to it into the same 
+				# "noise_sequence".  So we use a change in query to signal
+				# that a new noise sequence has started.
+				if last_query != query:
+
+					# Finish the previous noise sequence, check uniqueness
+					if last_query is not None:
+
+						# Convert noise sequence to tuple so its hashable
+						noise_sequence = tuple(noise_sequence)
+
+						# Ensure the noise sequence is novel
+						novel = noise_sequence not in noise_sequences
+						self.assertTrue(novel)
+
+						# Now add this sequence to the list
+						noise_sequences.add(tuple(noise_sequence))
+
+					# Start a new noise sequence
+					noise_sequence = []
+
+				# Append the noise context to the current noise sequence
+				noise_sequence.append(context)
+				last_query = query
+
+		# Test the final noise sequence
+		noise_sequence = tuple(noise_sequence)
+		novel = noise_sequence not in noise_sequences
+		self.assertTrue(novel)
+
+
+
+	def test_symbolic_minibatches(self):
+		'''
+		The symbolic minibatching mechanism should yield the exact same
+		set of examples as the non-symbolic mechanism.  Here we compare
+		them to make sure that is the case.
+		'''
+		# Ensure reproducibility in this stochastic test
+		np.random.seed(1)
+
+		# Get the symbolic minibatch
+		batch_spec = self.preloaded_generator.get_symbolic_minibatch()
+		symbolic_signal, symbolic_noise, updates, num_batches = batch_spec
+
+		# Make a batching function.  This is a somewhat trivial function:
+		# all it does is pull out the minibatch.  But it simulates 
+		# accessing the minibatch in a theano compiled function which 
+		# incorporates incrementing the minibatch iteration number as an
+		# update
+		get_batch = function(
+			[],[symbolic_signal, symbolic_noise],
+			updates=updates
+		)
+
+		# Get every signal and noise example, and keep track of them
+		# all.  We'll check that we get the exact same examples from
+		# the symbolic and non-symbolic methods of minibatching
+		symbolic_signal_counter = Counter()
+		symbolic_noise_counter = Counter()
+		for batch_num in range(num_batches):
+			signal, noise = get_batch()
+			for row in signal:
+				symbolic_signal_counter[tuple(row)] += 1
+
+			for row in noise:
+				symbolic_noise_counter[tuple(row)] += 1
+
+		# We will now generate the minibatches, but serve them 
+		# non-symbolically.  Ensure the same randomness seeds this process
+		# so that we can expect the same examples to be chosen.
+		np.random.seed(1)
+
+		# Generate minibatches using the minibatcher's non-symbolic
+		# asynchronous minibatching approach
+		signal_counter = Counter()
+		noise_counter = Counter()
+		for signal_batch, noise_batch in self.preloaded_generator:
+			for row in signal_batch:
+				signal_counter[tuple(row)] += 1
+			for row in noise_batch:
+				noise_counter[tuple(row)] += 1
+
+		# now check that we have all of the same examples
+		self.assertEqual(symbolic_signal_counter, signal_counter)
+		self.assertEqual(symbolic_noise_counter, noise_counter)
+
 
 
 	def test_minibatches(self):
