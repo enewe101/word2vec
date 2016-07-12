@@ -1019,7 +1019,7 @@ class TestMinibatcher(TestCase):
 
 		# Get the symbolic minibatch
 		batch_spec = self.preloaded_generator.get_symbolic_minibatch()
-		symbolic_signal, symbolic_noise, updates, num_batches = batch_spec
+		symbolic_signal, symbolic_noise, updates = batch_spec
 
 		# Make a batching function.  This is a somewhat trivial function:
 		# all it does is pull out the minibatch.  But it simulates 
@@ -1030,6 +1030,9 @@ class TestMinibatcher(TestCase):
 			[],[symbolic_signal, symbolic_noise],
 			updates=updates
 		)
+
+		# Load the dataset
+		num_batches = self.preloaded_generator.load_dataset()
 
 		# Get every signal and noise example, and keep track of them
 		# all.  We'll check that we get the exact same examples from

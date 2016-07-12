@@ -55,6 +55,7 @@ class Minibatcher(object):
 		self.num_example_generators = num_example_generators
 		self.verbose = verbose
 
+		self.setup_symbolic_minibatching()
 
 	def check_access(self, savedir):
 
@@ -490,6 +491,26 @@ class Minibatcher(object):
 		return self.minibatch_consumer
 
 
+	def setup_symbolic_minibatching(self):
+
+		# Create a shared variable that will (later) hold the entire dataset
+		self.loaded_dataset = shared(np.array([],dtype='float32'))
+
+		# Define a symbolic variable to represent a single minibatch,
+		# based on a slice of the loaded dataset that is indexed by another
+		# shared variable
+		i = shared(0)
+		self.X = self.loaded_dataset[i : i+batch_size,]
+
+		# Define updates that causes the minibatch window to move
+		self.updates = [(i, i+batch_size)]
+
+
+	def get_symbolic_minibatch(self):
+		# Return the symbolic minibatch and the updates
+		return self.X, self.updates
+
+
 	def get_symbolic_minibatch(self):
 		'''
 		This generates a theano shared variable storing the full dataset 
@@ -519,27 +540,100 @@ class Minibatcher(object):
 		for minibatch in self.get_async_batch_iterator():
 			dataset.extend(minibatch)
 			num_batches += 1
+		dataset = np.array(dataset, dtype="float32")
 
 		# Now move the dataset onto GPU (into GRAM).
-		loaded_dataset = shared(dataset)
-
-		# Define a symbolic variable representing a single minibatch
-		i = shared(0)
-		X = loaded_dataset[i : i+batch_size,]
-
-		# Define updates that causes the minibatch window to move
-		updates = [(i, i+batch_size)]
+		self.loaded_dataset.set_value(dataset)
 
 		# Return the symbolic minibatch and the updates
-		return X, updates, num_batches
+		return num_batches
 
 
 	def __iter__(self):
 		return self.get_async_batch_iterator()
 
 
+class NoiseSymbolicMinibatcherMixin(object):
 
-class Word2VecMinibatcher(Minibatcher):
+	def setup_symbolic_minibatching(self):
+
+		# Define a shared variable that will (later) hold entire dataset
+		# Note that in this case we want it to hold integers, not floats
+		# because the word2vec data are integers representing token ids.
+		#
+		# Here we are just creating an empty shared variable, but we
+		# ensure that it has the right number of dimensions (2, because of
+		# the [[]] passed into np.array), and correct dtype.
+		self.loaded_dataset = shared(np.array([[]],dtype='int32'))
+
+		# Define a the minibatch window indexing around a shared
+		# variable, i, which tracks minibatch iteration
+		i = shared(0)
+		window_size = self.batch_size * (self.noise_ratio + 1)
+		signal_start = i * window_size
+		signal_end = signal_start + self.batch_size
+		noise_start = signal_end
+		noise_end = noise_start + self.batch_size * self.noise_ratio
+
+		# Define a symbolic minibatch in terms of the full dataset
+		# using the window indexing
+		self.symbolic_signal_batch = self.loaded_dataset[
+			signal_start : signal_end,]
+		self.symbolic_noise_batch = self.loaded_dataset[
+			noise_start : noise_end,]
+
+		# Define an update that increments the minibatch
+		self.updates = [(i, i+1)]
+
+
+	def get_symbolic_minibatch(self):
+		return (
+			self.symbolic_signal_batch, self.symbolic_noise_batch, 
+			self.updates
+		)
+
+
+	def load_dataset(self):
+		'''
+		This generates a theano shared variable storing the full dataset 
+		-- all training examples.  When the theano device setting is the
+		GPU, shared variables are stored on the GPU, so this has the 
+		effect of loading the full dataset onto the GPU.
+
+		One of the return values is a (set of) symbolic theano variable(s) 
+		corresponding to a single minibatch of the data.  This symbolic 
+		variable can be used to set up the training function.  What will 
+		happen during training is that this variable acts as a sliding 
+		"window" on the full dataset, selecting each minibatch in turn, 
+		even though the entire dataset is loaded into GPU memory.  
+		
+		The indexing that causes the symbolic minibatch to address different
+		parts of the dataset is itself a shared variable, and it can be
+		updated using an update tuple provided to the updates list of a
+		theanod function.  The necessary update tuple is also provided as 
+		a return value, so that it can be incorporated into the training
+		function
+		'''
+
+		# Load the entire dataset into RAM, converting to a numpy array.  
+		# Use the async_batch_iterator to allow multiple read processes.
+		dataset = []
+		num_batches = 0
+		for signal_batch, noise_batch in self.get_async_batch_iterator():
+			dataset.extend(signal_batch)
+			dataset.extend(noise_batch)
+			num_batches += 1
+		dataset = np.array(dataset, dtype='int32')
+
+		# Now move the dataset onto GPU
+		self.loaded_dataset.set_value(dataset)
+
+		# Return the number of batches
+		return num_batches
+
+
+
+class Word2VecMinibatcher(NoiseSymbolicMinibatcherMixin, Minibatcher):
 
 	NOT_DONE = 0
 	DONE = 1
@@ -558,6 +652,11 @@ class Word2VecMinibatcher(Minibatcher):
 		num_example_generators=3
 	):
 
+		# Need to register noise ratio before call to super, because
+		# super will call an overridden method that expects noise ratio
+		# to be set
+		self.noise_ratio = noise_ratio
+
 		super(Word2VecMinibatcher, self).__init__(
 			files,
 			directories,
@@ -569,7 +668,6 @@ class Word2VecMinibatcher(Minibatcher):
 
 		# Register parameters not already registered by 
 		# `super().__init__().`
-		self.noise_ratio = noise_ratio
 		self.kernel = kernel
 		self.t = t
 
@@ -687,64 +785,6 @@ class Word2VecMinibatcher(Minibatcher):
 		if i >= 0:
 			yield (signal_batch, noise_batch)
 
-
-	def get_symbolic_minibatch(self):
-		'''
-		This generates a theano shared variable storing the full dataset 
-		-- all training examples.  When the theano device setting is the
-		GPU, shared variables are stored on the GPU, so this has the 
-		effect of loading the full dataset onto the GPU.
-
-		One of the return values is a (set of) symbolic theano variable(s) 
-		corresponding to a single minibatch of the data.  This symbolic 
-		variable can be used to set up the training function.  What will 
-		happen during training is that this variable acts as a sliding 
-		"window" on the full dataset, selecting each minibatch in turn, 
-		even though the entire dataset is loaded into GPU memory.  
-		
-		The indexing that causes the symbolic minibatch to address different
-		parts of the dataset is itself a shared variable, and it can be
-		updated using an update tuple provided to the updates list of a
-		theanod function.  The necessary update tuple is also provided as 
-		a return value, so that it can be incorporated into the training
-		function
-		'''
-
-		# Load the entire dataset into RAM, converting to a numpy array.  
-		# Use the async_batch_iterator to allow multiple read processes.
-		dataset = []
-		num_batches = 0
-		for signal_batch, noise_batch in self.get_async_batch_iterator():
-			dataset.extend(signal_batch)
-			dataset.extend(noise_batch)
-			num_batches += 1
-		dataset = np.array(dataset, dtype='int32')
-
-		# Now move the dataset onto GPU (into GRAM).
-		loaded_dataset = shared(dataset)
-
-		# Define a the minibatch window indexing around a shared
-		# variable, i, which tracks minibatch iteration
-		i = shared(0)
-		window_size = self.batch_size * (self.noise_ratio + 1)
-		signal_start = i * window_size
-		signal_end = signal_start + self.batch_size
-		noise_start = signal_end
-		noise_end = noise_start + self.batch_size * self.noise_ratio
-
-		# Define a symbolic minibatch in terms of the full dataset
-		# using the window indexing
-		symbolic_signal_batch = loaded_dataset[signal_start : signal_end,]
-		symbolic_noise_batch = loaded_dataset[noise_start : noise_end,]
-
-		# Define an update that increments the minibatch
-		updates = [(i, i+1)]
-
-		# Return the symbolic minibatch and the updates
-		return (
-			symbolic_signal_batch, symbolic_noise_batch, 
-			updates, num_batches
-		)
 
 
 	def init_batch(self):
