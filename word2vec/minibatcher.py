@@ -1,6 +1,6 @@
 from iterable_queue import IterableQueue
 from multiprocessing import Process
-from counter_sampler import MultinomialSampler
+from categorical import Categorical
 from token_map import UNK
 from unigram_dictionary import UnigramDictionary
 import numpy as np
@@ -19,8 +19,8 @@ def default_parse(filename):
 MAX_NUMPY_SEED = 4294967295
 def reseed():
 	'''
-	Makes a hop in the random chain.  
-	
+	Makes a hop in the random chain.
+
 	If called before spawning a child processes, it will ensure each child
 	generates different random numbers.  Unlike seeding child randomness
 	from an os source of randomness, this will produce globally consistent
@@ -84,12 +84,12 @@ class Minibatcher(object):
 	def preparation(self):
 		'''
 		Used to perform any preparation steps that are needed before
-		minibatching can be done (not always necesary).  E.g. assembling a 
-		dictionary that maps tokens to integers, and determining the total 
-		vocabulary size of the corpus. Or normalizing variables based on 
+		minibatching can be done (not always necesary).  E.g. assembling a
+		dictionary that maps tokens to integers, and determining the total
+		vocabulary size of the corpus. Or normalizing variables based on
 		their total variation throughout the corpus.
 
-		Usually not called directly, but rather, `prepare()` is called, 
+		Usually not called directly, but rather, `prepare()` is called,
 		and delegates to this method.  Prepare also enables saving data
 		generated during this step.  To do so, override the `save()` method
 		(which is a no-op by default).
@@ -117,25 +117,25 @@ class Minibatcher(object):
 		maps tokens to integers, and determining the total vocabulary size
 		of the corpus.  It is assumed that files will need
 		to be saved as part of this process, and that they should be
-		saved under `savedir`, with `self.save()` managing the details 
+		saved under `savedir`, with `self.save()` managing the details
 		of writing files under `savedir`.
 
 		INPUTS
 
 		* Note About Inputs *
 		the call signature of this method is variable and is
-		determined by the call signature of the core 
-		`self.preparation()` method.  Refer to that method's call 
+		determined by the call signature of the core
+		`self.preparation()` method.  Refer to that method's call
 		signature.  Minimally, this method accepts `savedir`
 
-		* savedir [str]: path to directory in which preparation files 
+		* savedir [str]: path to directory in which preparation files
 			should be saved.
 
 		RETURNS
 		* [None]
 		'''
 
-		# Before doing anything, if we were requested to save the 
+		# Before doing anything, if we were requested to save the
 		# dictionary, make sure we'll be able to do that (fail fast)
 		if savedir is not None:
 			self.check_access(savedir)
@@ -150,10 +150,10 @@ class Minibatcher(object):
 	def generate_filenames(self):
 
 		'''
-		Generator that yields all filenames (absolute paths) making up the 
+		Generator that yields all filenames (absolute paths) making up the
 		dataset.  (Files are specified to the Minibatcher constructor
 		files and / or directories.  All listed files and all files directly
-		contained in listed directories will be processed, unless they 
+		contained in listed directories will be processed, unless they
 		match regex patterns in the optional `skip` list.
 
 		(no INPUTS)
@@ -208,11 +208,11 @@ class Minibatcher(object):
 	def parse(self, filename):
 		'''
 		Parses input corpus files into a file-format-independent in-memory
-		representation.  Since training examples are read from file, 
-		this function provides file-reading and parsing functionality, 
+		representation.  Since training examples are read from file,
+		this function provides file-reading and parsing functionality,
 		and should bring the data stored in corpus files into a form that
 		makes generating actual training examples easy.  This function,
-		however, should not actually generate training examples; this 
+		however, should not actually generate training examples; this
 		should be done in `build_examples()`.  Rather, this provides a
 		modular component that can be exchaged in cases where the file
 		format changes, making the example-building logic independent of
@@ -226,7 +226,7 @@ class Minibatcher(object):
 		'''
 
 		# This example parser simply returns a list of all the lines in
-		# the file in which each line is tokenized.  Typically this 
+		# the file in which each line is tokenized.  Typically this
 		# function will need to do more, such as loading json, numpy, or
 		# image data file formats.  The return value will be provided to
 		# the method `build_examples`.
@@ -242,7 +242,7 @@ class Minibatcher(object):
 		the storage format should be handled in `parse()`.
 
 		INPUTS
-		* parsed [any]: Data from a single dataset file that has been 
+		* parsed [any]: Data from a single dataset file that has been
 			parsed into a file-format-independent form.
 
 		YIELDS
@@ -252,7 +252,7 @@ class Minibatcher(object):
 		'''
 		# This minimalistic example assumes that parsed has yielded an
 		# iterable of items, and that each item is already a well-formed
-		# training example, which can directly be yielded.  Normally 
+		# training example, which can directly be yielded.  Normally
 		# substantial transformations and sub-sampling might be done
 		# here to generate training examples using the dataset.
 		for item in parsed:
@@ -264,12 +264,12 @@ class Minibatcher(object):
 		'''
 		Generator that encapsulates all processing for a single data file,
 		i.e., parsing and building of examples.
-		
+
 		INPUTS
 		* filename [str]: path to file to be processed.
 
 		YIELDS
-		* example [any]: object representing (usually) one training 
+		* example [any]: object representing (usually) one training
 			example.
 		'''
 
@@ -283,7 +283,7 @@ class Minibatcher(object):
 	def generate_examples(self):
 		'''
 		Generates training examples.  Via subroutienes, this iterates
-		over all data files, parsing them, and then generating 
+		over all data files, parsing them, and then generating
 		training examples from them, which are yielded one at a time.
 
 		(no INPUTS)
@@ -307,7 +307,7 @@ class Minibatcher(object):
 		as an iterable.
 
 		INPUTS
-		* file_queue [IterableQueue.ConsumerQueue]: A queue containing 
+		* file_queue [IterableQueue.ConsumerQueue]: A queue containing
 			absolute paths ([str]s) of dataset files.
 		* example_queue [IterableQueue.ProducerQueue]: A queue that accepts
 			training examples ([any]).
@@ -351,11 +351,11 @@ class Minibatcher(object):
 
 	def generate_minibatches(self):
 		'''
-		Full-pass non-multiprocessing generator of minibatches.  
+		Full-pass non-multiprocessing generator of minibatches.
 		Iterates over all datafiles, parses them, generates training
 		examples, and batches those training examples into minibatches,
-		which are yielded.  Can be used as an alternative to `__iter__()`. 
-		Minibatches will not be prepared in the background (normally 
+		which are yielded.  Can be used as an alternative to `__iter__()`.
+		Minibatches will not be prepared in the background (normally
 		preparing in the background offers speed advantages).  Instead
 		minibatches will be constructed on demand according to the
 		pace of looping by the caller.  Normally much slower, but possibly
@@ -379,13 +379,13 @@ class Minibatcher(object):
 		This can be useful if you want to load the full training set
 		into memory for some reason.  However, this is generally slower
 		than `__iter__()` because batching does not take place in the
-		background using spawned processes, but rather takes place in 
+		background using spawned processes, but rather takes place in
 		the foreground, blocking until the entire training set has been
 		read into memory.  This will usually have similar training speed
 		characteristics to `generate_minibatches()`, but will block for
 		a long time at the start while data is read into memory, and then
 		will catch up as training takes place without the need for further
-		reads from storage. Large datasets will take long to load and will 
+		reads from storage. Large datasets will take long to load and will
 		consume large amounts of memory.
 
 		(no INPUTS)
@@ -403,11 +403,11 @@ class Minibatcher(object):
 	def generate_minibatches_async(self, example_queue, minibatch_queue):
 		'''
 		Asynchronous version of `generate_minibatches()`, designed to be
-		run within a forked worker process.  Used in conjuction with 
+		run within a forked worker process.  Used in conjuction with
 		`generate_examples_async()`, via the sharing of an example_queue,
 		to create an asynchronous pipeline that assembles minibatches in
-		the background.  This is the default method used for minibatching 
-		when Minibatcher is treated as an iterator.  See 
+		the background.  This is the default method used for minibatching
+		when Minibatcher is treated as an iterator.  See
 		`__iter__()`.
 
 		INPUTS
@@ -430,20 +430,20 @@ class Minibatcher(object):
 	def get_async_batch_iterator(self):
 		'''
 		Builds an asynchronous minibatching pipeline, which reads all
-		dataset files, parses them, generates training examples, and 
-		packages those training examples into minibatches.  Finally, 
-		it yields an iterable of minibatches, taking the form of an 
+		dataset files, parses them, generates training examples, and
+		packages those training examples into minibatches.  Finally,
+		it yields an iterable of minibatches, taking the form of an
 		IterableQueue.ConsumerQueue.
 
 		(no Inputs)
 
 		OUTPUTS
-		* [iterable (IterableQueue.ConsumerQueue)]: Iterable of 
+		* [iterable (IterableQueue.ConsumerQueue)]: Iterable of
 			minibatches.
 		'''
 
 		# TODO: currently the only randomness in minibatching comes from
-		# the signal context and noise contexts that are drawn for a 
+		# the signal context and noise contexts that are drawn for a
 		# given entity query tuple.  But the entity query tuples are read
 		# deterministically in order through the corpus  Ideally examples
 		# should be totally shuffled..
@@ -465,12 +465,12 @@ class Minibatcher(object):
 
 			# These calls to np.random are a hack to ensure that each
 			# child example-generating process gets different randomness
-			reseed()
+			#reseed()
 			Process(target=self.generate_examples_async, args=(
 				file_queue.get_consumer(),
 				example_queue.get_producer()
 			)).start()
-			
+
 		# Make a processes that batches the files and puts examples onto
 		# the minibatch queue
 		Process(target=self.generate_minibatches_async, args=(
@@ -478,7 +478,7 @@ class Minibatcher(object):
 			minibatch_queue.get_producer()
 		)).start()
 
-		# Before closing the queues, make a consumer that will be used for 
+		# Before closing the queues, make a consumer that will be used for
 		# yielding minibatches to the external call for iteration.
 		self.minibatch_consumer = minibatch_queue.get_consumer()
 
@@ -513,27 +513,27 @@ class Minibatcher(object):
 
 	def get_symbolic_minibatch(self):
 		'''
-		This generates a theano shared variable storing the full dataset 
+		This generates a theano shared variable storing the full dataset
 		-- all training examples.  When the theano device setting is the
-		GPU, shared variables are stored on the GPU, so this has the 
+		GPU, shared variables are stored on the GPU, so this has the
 		effect of loading the full dataset onto the GPU.
 
-		One of the return values is a (set of) symbolic theano variable(s) 
-		corresponding to a single minibatch of the data.  This symbolic 
-		variable can be used to set up the training function.  What will 
-		happen during training is that this variable acts as a sliding 
-		"window" on the full dataset, selecting each minibatch in turn, 
-		even though the entire dataset is loaded into GPU memory.  
-		
+		One of the return values is a (set of) symbolic theano variable(s)
+		corresponding to a single minibatch of the data.  This symbolic
+		variable can be used to set up the training function.  What will
+		happen during training is that this variable acts as a sliding
+		"window" on the full dataset, selecting each minibatch in turn,
+		even though the entire dataset is loaded into GPU memory.
+
 		The indexing that causes the symbolic minibatch to address different
 		parts of the dataset is itself a shared variable, and it can be
 		updated using an update tuple provided to the updates list of a
-		theano function.  The necessary update tuple is also provided as 
+		theano function.  The necessary update tuple is also provided as
 		a return value, so that it can be incorporated into the training
 		function
 		'''
 
-		# Load the entire dataset into RAM.  
+		# Load the entire dataset into RAM.
 		# Use the async_batch_iterator to allow multiple read processes.
 		dataset = []
 		num_batches = 0
@@ -588,34 +588,34 @@ class NoiseSymbolicMinibatcherMixin(object):
 
 	def get_symbolic_minibatch(self):
 		return (
-			self.symbolic_signal_batch, self.symbolic_noise_batch, 
+			self.symbolic_signal_batch, self.symbolic_noise_batch,
 			self.updates
 		)
 
 
 	def load_dataset(self):
 		'''
-		This generates a theano shared variable storing the full dataset 
+		This generates a theano shared variable storing the full dataset
 		-- all training examples.  When the theano device setting is the
-		GPU, shared variables are stored on the GPU, so this has the 
+		GPU, shared variables are stored on the GPU, so this has the
 		effect of loading the full dataset onto the GPU.
 
-		One of the return values is a (set of) symbolic theano variable(s) 
-		corresponding to a single minibatch of the data.  This symbolic 
-		variable can be used to set up the training function.  What will 
-		happen during training is that this variable acts as a sliding 
-		"window" on the full dataset, selecting each minibatch in turn, 
-		even though the entire dataset is loaded into GPU memory.  
-		
+		One of the return values is a (set of) symbolic theano variable(s)
+		corresponding to a single minibatch of the data.  This symbolic
+		variable can be used to set up the training function.  What will
+		happen during training is that this variable acts as a sliding
+		"window" on the full dataset, selecting each minibatch in turn,
+		even though the entire dataset is loaded into GPU memory.
+
 		The indexing that causes the symbolic minibatch to address different
 		parts of the dataset is itself a shared variable, and it can be
 		updated using an update tuple provided to the updates list of a
-		theanod function.  The necessary update tuple is also provided as 
+		theanod function.  The necessary update tuple is also provided as
 		a return value, so that it can be incorporated into the training
 		function
 		'''
 
-		# Load the entire dataset into RAM, converting to a numpy array.  
+		# Load the entire dataset into RAM, converting to a numpy array.
 		# Use the async_batch_iterator to allow multiple read processes.
 		dataset = []
 		num_batches = 0
@@ -666,7 +666,7 @@ class Word2VecMinibatcher(NoiseSymbolicMinibatcherMixin, Minibatcher):
 			verbose
 		)
 
-		# Register parameters not already registered by 
+		# Register parameters not already registered by
 		# `super().__init__().`
 		self.kernel = kernel
 		self.t = t
@@ -677,7 +677,7 @@ class Word2VecMinibatcher(NoiseSymbolicMinibatcherMixin, Minibatcher):
 		else:
 			self.unigram_dictionary = UnigramDictionary()
 
-		# Validate the kernel.  It should reflect the relative 
+		# Validate the kernel.  It should reflect the relative
 		# frequencies of choosing tokens from a window of +/- K tokens
 		# relative to a query token.  So it must have an even number of
 		# entries
@@ -695,14 +695,14 @@ class Word2VecMinibatcher(NoiseSymbolicMinibatcherMixin, Minibatcher):
 		'''
 		Get the size of the vocabulary.  Only makes sense to call this
 		after Minibatcher.prepare() has been called, or if an
-		existing (pre-filled) UnigramDictionary was loaded, since otherwise 
+		existing (pre-filled) UnigramDictionary was loaded, since otherwise
 		it would just return 0.
 
 		(no INPUTS)
 
 		OUTPUTS
 		* [int]: size of vocabulary (including `UNK`).
-		
+
 		'''
 		# Delegate to the underlying UnigramDictionary
 		return len(self.unigram_dictionary)
@@ -724,7 +724,7 @@ class Word2VecMinibatcher(NoiseSymbolicMinibatcherMixin, Minibatcher):
 		# Delegate to the underlying UnigramDictionary
 		self.unigram_dictionary.load(directory)
 
-	
+
 	def save(self, directory):
 		'''
 		Save the unigram_dictionary to the given directory.
@@ -749,7 +749,7 @@ class Word2VecMinibatcher(NoiseSymbolicMinibatcherMixin, Minibatcher):
 		Exposes the prune function for the underlying UnigramDictionary
 		'''
 		self.unigram_dictionary.prune(min_frequency)
-  
+
 
 	def batch_examples(self, example_iterator):
 
@@ -888,7 +888,7 @@ class TokenChooser(object):
 		in the constructor.  Note that when sampling the context near
 		the beginning of a sentence, the left part of the context window
 		will be truncated.  Similarly, sampling context near the end of
-		a sentence leads to truncation of the right part of the context 
+		a sentence leads to truncation of the right part of the context
 		window.  Short sentences lead to truncation on both sides.
 
 		To ensure that samples are returned within the possibly truncated
@@ -900,28 +900,28 @@ class TokenChooser(object):
 			is the 3rd token in the sentence, idx should be 2 (because
 			of 0-based indexing)
 
-		`length`: length of the the context, E.g. If context is 
+		`length`: length of the the context, E.g. If context is
 			constrained to a sentence, and sentence is 7 tokens long,
 			length should be 7.
 		'''
 
-		# If the token is near the edges of the context, then the 
-		# sampling kernel will be truncated (we can't sample before the 
+		# If the token is near the edges of the context, then the
+		# sampling kernel will be truncated (we can't sample before the
 		# firs word in the sentence, or after the last word).
 		# Determine the slice indices that define the truncated kernel.
 		negative_idx = length - idx
 		start = max(0, self.K - idx)
-		stop = min(2*self.K, self.K + negative_idx - 1)	
+		stop = min(2*self.K, self.K + negative_idx - 1)
 
-		# We make a separate multinomial sampler for each different 
-		# truncation of the kernel, because they each define a different 
-		# set of sampling probabilityes.  If we don't have a sampler for 
+		# We make a separate multinomial sampler for each different
+		# truncation of the kernel, because they each define a different
+		# set of sampling probabilityes.  If we don't have a sampler for
 		# this particular kernel shape, make one.
 		if not (start, stop) in self.samplers:
 
 			trunc_probabilities = self.kernel[start:stop]
 			self.samplers[start,stop] = (
-				MultinomialSampler(trunc_probabilities)
+				Categorical(trunc_probabilities)
 			)
 
 		# Sample from the multinomial sampler for the context of this shape
@@ -934,5 +934,3 @@ class TokenChooser(object):
 		result_idx = relative_idx + idx
 
 		return result_idx
-
-

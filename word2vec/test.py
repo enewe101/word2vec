@@ -1,15 +1,21 @@
 from unigram_dictionary import UnigramDictionary
 from collections import Counter, defaultdict
-from token_map import TokenMap, SILENT, ERROR
+from token_map import TokenMap, SILENT, ERROR, UNK
 import time
 from unittest import main, TestCase
-from theano import tensor as T, function
+from theano import tensor as T, function, shared
 import numpy as np
 from w2v import Word2VecEmbedder, word2vec
-from noise_contrast import noise_contrast, NoiseContraster
+from noise_contrast import get_noise_contrastive_loss
 from minibatcher import Word2VecMinibatcher, TokenChooser, default_parse
-from counter_sampler import MultinomialSampler, CounterSampler
+from new_minibatcher import (
+	DatasetReader, DataSetReaderIllegalStateException, TheanoMinibatcher
+)
+from counter_sampler import CounterSampler
 from lasagne.init import Normal
+from lasagne.updates import nesterov_momentum
+import re
+import os
 
 
 def sigma(a):
@@ -19,7 +25,7 @@ usigma = np.vectorize(sigma)
 
 class TestUnigramDictionary(TestCase):
 	'''
-	Tests that UnigramDictionary properly represents the corpus 
+	Tests that UnigramDictionary properly represents the corpus
 	statistics, and that the pruning function works as expected.
 	'''
 
@@ -27,13 +33,13 @@ class TestUnigramDictionary(TestCase):
 
 	# Make a toy corpus with specific token frequencies.
 	FREQUENCIES = {
-		'apple':4, 'banana':8, 'orange':6, 
+		'apple':4, 'banana':8, 'orange':6,
 		'pineapple':3, 'grapefruit':9
 	}
 	CORPUS = list(Counter(FREQUENCIES).elements())
 
 
-	# TODO test that we actually produce the samples according to the 
+	# TODO test that we actually produce the samples according to the
 	# frequency distribution of the corpus
 	def test_sampling(self):
 		'''
@@ -56,7 +62,7 @@ class TestUnigramDictionary(TestCase):
 
 	def test_counter_sampler_statistics(self):
 		'''
-		This tests that the UnigramDictionary really does produce results 
+		This tests that the UnigramDictionary really does produce results
 		whose statistics match those requested by the counts vector
 		'''
 		# Seed numpy's random function to make the test reproducible
@@ -92,7 +98,7 @@ class TestUnigramDictionary(TestCase):
 			self.assertEqual(unigram_dictionary.add(fruit), idx+1)
 
 		for idx, fruit in enumerate(self.TOKENS):
-			# Ensure that idxs are stable and retrievable with 
+			# Ensure that idxs are stable and retrievable with
 			# UnigramDictionary.get_id()
 			self.assertEqual(unigram_dictionary.get_id(fruit), idx+1)
 
@@ -115,11 +121,11 @@ class TestUnigramDictionary(TestCase):
 
 	def test_raise_error_on_unk(self):
 		'''
-		If the unigram_dictionary is constructed passing 
+		If the unigram_dictionary is constructed passing
 			on_unk=UnigramDictionary.ERROR
 		then calling get_id() or get_ids() will throw a KeyError if one
-		of the supplied tokens isn't in the unigram_dictionary.  
-		(Normally it would return 0, which is a token id reserved for 
+		of the supplied tokens isn't in the unigram_dictionary.
+		(Normally it would return 0, which is a token id reserved for
 		'UNK' -- any unknown token).
 		'''
 
@@ -138,7 +144,7 @@ class TestUnigramDictionary(TestCase):
 
 		unigram_dictionary = UnigramDictionary(on_unk=SILENT)
 
-		# In these assertions, we offset the expected list of ids by 1 
+		# In these assertions, we offset the expected list of ids by 1
 		# because the 0th id in unigram_dictionary is reserved for the UNK
 		# token
 
@@ -264,19 +270,19 @@ class TestUnigramDictionary(TestCase):
 
 class TestTokenChooser(TestCase):
 	'''
-	Given a list of tokens (usually representing a sentence), and a 
+	Given a list of tokens (usually representing a sentence), and a
 	particular query token, the job of the TokenChooser is to sample
 	from the nearby tokens, within a window of +/- K tokens.
 	It does not yield the sampled token itself, but rather, its index.
-	A complicating issue is the fact that the query token might be 
+	A complicating issue is the fact that the query token might be
 	near the beginning or end of the token list (sentence), which needs
-	to be accounted for so that the sampled index doesn't produce an 
+	to be accounted for so that the sampled index doesn't produce an
 	IndexError
 	'''
 
 	def test_mid_sentence(self):
 		'''
-		Test token chooser's performance given that the query token 
+		Test token chooser's performance given that the query token
 		is far from the edges of the context
 		'''
 
@@ -294,7 +300,7 @@ class TestTokenChooser(TestCase):
 
 		# Sample from +/- 5 words
 		K = 5
-		# Weight the probabilities like this (higher probability of 
+		# Weight the probabilities like this (higher probability of
 		# sampling near the query word itself).
 		counts = [1,2,3,4,5,5,4,3,2,1]
 
@@ -310,7 +316,7 @@ class TestTokenChooser(TestCase):
 
 		# Convert counts into frequencies
 		found_frequencies = dict([
-			(idx, c / float(num_samples)) 
+			(idx, c / float(num_samples))
 			for idx, c in found_counts.items()
 		])
 
@@ -321,7 +327,7 @@ class TestTokenChooser(TestCase):
 
 		# And so the expected absolute indices are:
 		expected_idxs = [
-			rel + query_idx 
+			rel + query_idx
 			for rel in expected_relative_idxs
 		]
 
@@ -338,7 +344,7 @@ class TestTokenChooser(TestCase):
 			set(expected_frequencies.keys())
 		)
 
-		# Then check that the indices in the sample arise with 
+		# Then check that the indices in the sample arise with
 		# approximately the frequencies expected
 		tolerance = 0.002
 		for idx in expected_frequencies:
@@ -348,7 +354,7 @@ class TestTokenChooser(TestCase):
 
 	def test_near_beginning(self):
 		'''
-		Test token chooser's performance given that the query token 
+		Test token chooser's performance given that the query token
 		is close to the beginning of the context
 		'''
 
@@ -366,7 +372,7 @@ class TestTokenChooser(TestCase):
 
 		# Sample from +/- 5 words
 		K = 5
-		# Weight the probabilities like this (higher probability of 
+		# Weight the probabilities like this (higher probability of
 		# sampling near the query word itself).
 		counts = [1,2,3,4,5,5,4,3,2,1]
 
@@ -382,7 +388,7 @@ class TestTokenChooser(TestCase):
 
 		# Convert counts into frequencies
 		found_frequencies = dict([
-			(idx, c / float(num_samples)) 
+			(idx, c / float(num_samples))
 			for idx, c in found_counts.items()
 		])
 
@@ -394,7 +400,7 @@ class TestTokenChooser(TestCase):
 
 		# And so the expected absolute indices are:
 		expected_idxs = [
-			rel + query_idx 
+			rel + query_idx
 			for rel in expected_relative_idxs
 		]
 
@@ -403,7 +409,7 @@ class TestTokenChooser(TestCase):
 		relative_frequencies = [4,5,5,4,3,2,1]
 		total = float(sum(relative_frequencies))
 		expected_frequencies = dict([
-			(idx, c / total) 
+			(idx, c / total)
 			for idx, c in zip(expected_idxs, relative_frequencies)
 		])
 
@@ -413,7 +419,7 @@ class TestTokenChooser(TestCase):
 			set(expected_frequencies.keys())
 		)
 
-		# Then check that the indices in the sample arise with 
+		# Then check that the indices in the sample arise with
 		# approximately the frequencies expected
 		tolerance = 0.003
 		for idx in expected_frequencies:
@@ -423,7 +429,7 @@ class TestTokenChooser(TestCase):
 
 	def test_near_end(self):
 		'''
-		Test token chooser's performance given that the query token 
+		Test token chooser's performance given that the query token
 		is close to the end of the context
 		'''
 
@@ -441,7 +447,7 @@ class TestTokenChooser(TestCase):
 
 		# Sample from +/- 5 words
 		K = 5
-		# Weight the probabilities like this (higher probability of 
+		# Weight the probabilities like this (higher probability of
 		# sampling near the query word itself).
 		counts = [1,2,3,4,5,5,4,3,2,1]
 
@@ -457,7 +463,7 @@ class TestTokenChooser(TestCase):
 
 		# Convert counts into frequencies
 		found_frequencies = dict([
-			(idx, c / float(num_samples)) 
+			(idx, c / float(num_samples))
 			for idx, c in found_counts.items()
 		])
 
@@ -469,7 +475,7 @@ class TestTokenChooser(TestCase):
 
 		# And so the expected absolute indices are:
 		expected_idxs = [
-			rel + query_idx 
+			rel + query_idx
 			for rel in expected_relative_idxs
 		]
 
@@ -478,7 +484,7 @@ class TestTokenChooser(TestCase):
 		relative_frequencies = [1,2,3,4,5]
 		total = float(sum(relative_frequencies))
 		expected_frequencies = dict([
-			(idx, c / total) 
+			(idx, c / total)
 			for idx, c in zip(expected_idxs, relative_frequencies)
 		])
 
@@ -488,7 +494,7 @@ class TestTokenChooser(TestCase):
 			set(expected_frequencies.keys())
 		)
 
-		# Then check that the indices in the sample arise with 
+		# Then check that the indices in the sample arise with
 		# approximately the frequencies expected
 		tolerance = 0.003
 		for idx in expected_frequencies:
@@ -512,7 +518,7 @@ class TestTokenChooser(TestCase):
 
 		# Sample from +/- 5 words
 		K = 5
-		# Weight the probabilities like this (higher probability of 
+		# Weight the probabilities like this (higher probability of
 		# sampling near the query word itself).
 		counts = [1,2,3,4,5,5,4,3,2,1]
 
@@ -528,7 +534,7 @@ class TestTokenChooser(TestCase):
 
 		# Convert counts into frequencies
 		found_frequencies = dict([
-			(idx, c / float(num_samples)) 
+			(idx, c / float(num_samples))
 			for idx, c in found_counts.items()
 		])
 
@@ -540,7 +546,7 @@ class TestTokenChooser(TestCase):
 
 		# And so the expected absolute indices are:
 		expected_idxs = [
-			rel + query_idx 
+			rel + query_idx
 			for rel in expected_relative_idxs
 		]
 
@@ -549,7 +555,7 @@ class TestTokenChooser(TestCase):
 		relative_frequencies = [5,4]
 		total = float(sum(relative_frequencies))
 		expected_frequencies = dict([
-			(idx, c / total) 
+			(idx, c / total)
 			for idx, c in zip(expected_idxs, relative_frequencies)
 		])
 
@@ -559,7 +565,7 @@ class TestTokenChooser(TestCase):
 			set(expected_frequencies.keys())
 		)
 
-		# Then check that the indices in the sample arise with 
+		# Then check that the indices in the sample arise with
 		# approximately the frequencies expected
 		tolerance = 0.003
 		for idx in expected_frequencies:
@@ -592,18 +598,18 @@ class TestCounterSampler(TestCase):
 
 	def test_add_function(self):
 		'''
-		Make sure that the add function is working correctly.  
-		CounterSampler stores counts as list, wherein the value at 
-		position i of the list encodes the number of counts seen for 
+		Make sure that the add function is working correctly.
+		CounterSampler stores counts as list, wherein the value at
+		position i of the list encodes the number of counts seen for
 		outcome i.
 
-		Counts are added by passing the outcome's index into 
+		Counts are added by passing the outcome's index into
 		CounterSampler.add()
 		which leads to position i of the counts list to be incremented.
 		If position i doesn't exist, it is created.  If the counts list
 		had only j elements before, and a count is added for position
-		i, with i much greater than j, then many elements are created 
-		between i and j, and are provisionally initialized with zero 
+		i, with i much greater than j, then many elements are created
+		between i and j, and are provisionally initialized with zero
 		counts.
 
 		Ensure that is done properly
@@ -618,10 +624,10 @@ class TestCounterSampler(TestCase):
 		self.assertEqual(counter_sampler.counts, expected_counts)
 
 		# Now ensure the underlying sampler can tolerate a counts list
-		# containing zeros, and that the sampling statistics is as 
-		# expected.  We expect that the only outcome that should turn up 
+		# containing zeros, and that the sampling statistics is as
+		# expected.  We expect that the only outcome that should turn up
 		# is outcome 6, since it has all the probability mass.  Check that.
-		counter = Counter(counter_sampler.sample((100000,))) # should be 
+		counter = Counter(counter_sampler.sample((100000,))) # should be
 															 # all 6's
 		total = float(sum(counter.values()))
 		found_normalized = [
@@ -669,7 +675,7 @@ class TestCounterSampler(TestCase):
 		# Check if each outcome was observed with a fraction that is within
 		# 0.005 of the expected fraction
 		close = [
-			abs(f - e) < 0.005 
+			abs(f - e) < 0.005
 			for f,e in zip(found_normalized, expected_normalized)
 		]
 		self.assertTrue(all(close))
@@ -739,7 +745,7 @@ class TestMultinomialSampler(TestCase):
 		# Check if each outcome was observed with a fraction that is within
 		# 0.005 of the expected fraction
 		close = [
-			abs(f - e) < 0.005 
+			abs(f - e) < 0.005
 			for f,e in zip(found_normalized, expected_normalized)
 		]
 		self.assertTrue(all(close))
@@ -760,7 +766,7 @@ class TestTokenMap(TestCase):
 			self.assertEqual(token_map.add(fruit), idx+1)
 
 		for idx, fruit in enumerate(self.TOKENS):
-			# Ensure that idxs are stable and retrievable with 
+			# Ensure that idxs are stable and retrievable with
 			# TokenMap.get_id()
 			self.assertEqual(token_map.get_id(fruit), idx+1)
 
@@ -783,10 +789,10 @@ class TestTokenMap(TestCase):
 
 	def test_raise_error_on_unk(self):
 		'''
-		If the token_map is constructed passing 
+		If the token_map is constructed passing
 			on_unk=TokenMap.ERROR
 		then calling get_id() or get_ids() will throw a KeyError if one
-		of the supplied tokens isn't in the token_map.  (Normally it 
+		of the supplied tokens isn't in the token_map.  (Normally it
 		would return 0, which is a token id reserved for 'UNK' -- any
 		unknown token).
 		'''
@@ -861,7 +867,9 @@ class TestTokenMap(TestCase):
 
 
 class TestNoiseContrast(TestCase):
+
 	def test_noise_contrast(self):
+
 		signal_input = T.dvector()
 		noise_input = T.dmatrix()
 		loss = noise_contrast(signal_input, noise_input)
@@ -877,22 +885,18 @@ class TestNoiseContrast(TestCase):
 		)
 		expected_loss = -expected_objective / float(len(test_signal))
 
-		#print 'expected_loss:'
-		#print expected_loss
-		#print
-		#print 'test_loss:'
-		#print test_loss
-		#print
-
 		self.assertAlmostEqual(test_loss, expected_loss)
 
 
 
-class TestMinibatcher(TestCase):
+class TestDataReader(TestCase):
+
+	#TODO: add a test for saving and loading the dictionary and for freezing
+	# the dataset
 
 	def setUp(self):
 
-		# Define some parameters to be used in construction 
+		# Define some parameters to be used in construction
 		# Minibatcher
 		self.files = [
 			'test-data/test-corpus/003.tsv',
@@ -903,38 +907,181 @@ class TestMinibatcher(TestCase):
 		self.num_example_generators = 3
 		self.t = 0.03
 
-		# Make a minibatch generator
-		self.generator = Word2VecMinibatcher(
+		self.dataset_reader_with_discard = DatasetReader(
 			files=self.files,
+			batch_size = self.batch_size,
+			noise_ratio = self.noise_ratio,
 			t=self.t,
-			batch_size=self.batch_size,
-			noise_ratio=self.noise_ratio,
-			verbose=False,
-			num_example_generators=self.num_example_generators
+			num_processes=3,
+			verbose=False
 		)
 
-		# Make another Word2VecMinibatcher, and pre-load this one with 
-		# token_map and counter_sampler distribution information.
-		self.preloaded_generator = Word2VecMinibatcher(
+		self.dataset_reader_no_discard = DatasetReader(
 			files=self.files,
-			t=self.t,
-			batch_size=self.batch_size,
-			noise_ratio=self.noise_ratio,
-			verbose=False,
-			num_example_generators=self.num_example_generators
+			batch_size = self.batch_size,
+			noise_ratio = self.noise_ratio,
+			t=1.0,
+			num_processes=3,
+			verbose=False
 		)
-		self.preloaded_generator.load('test-data/minibatch-generator-test')
+
+
+	def test_illegal_state_exception(self):
+		'''
+		Calling generate_dataset() on a DatasetReader before calling prepare()
+		should raise a DataSetReaderIllegalStateException.
+		'''
+		reader = self.dataset_reader_with_discard
+		with self.assertRaises(DataSetReaderIllegalStateException):
+			reader.generate_dataset()
+
+
+	def test_token_discarding(self):
+		'''
+		Make sure that token discarding is occurring as expected.  We build the
+		test case around the token "the", because its the most common token,
+		and so is most reliably discarded.  We compare the number of signal
+		examples whose query word is "the" to the number of occurrences of
+		"the" in the test corpus, and check that this fraction is close to that
+		expected based on the prescribed probability of discarding.
+		'''
+		# Ensure reproducibility in this stochastic test
+		np.random.seed(1)
+		reader = self.dataset_reader_with_discard
+		reader.prepare()
+
+		# Count the number of times "the" appears
+		num_the_tokens = 0
+		the_pattern = re.compile(r'\bthe\b')
+		for filename in self.files:
+			text = open(filename).read()
+			the_matches = the_pattern.findall(text)
+			num_the_tokens += len(the_matches)
+
+		# Repeatedly generate the dataset, with discarding, and keep track of
+		# how many times "the" is included as a query word
+		num_replicates = 5
+		signal_query_frequencies = []
+		for i in range(num_replicates):
+			signal_query_freq, noise_query_freq = self.get_the_query_frequency()
+			signal_query_frequencies.append(signal_query_freq)
+			# The ratio of noise and signal examples should not be affected by
+			# discarding.
+			self.assertEqual(signal_query_freq*self.noise_ratio, noise_query_freq)
+
+		# Take the average frequency with which "the" arose accross replicates.
+		signal_query_frequency = np.mean(signal_query_frequencies)
+
+		# We expect "the" to arise in signal queries less often than it actually
+		# arises in the text, based on the probability of discarding
+		tolerance = 0.05
+		the_token = reader.unigram_dictionary.get_id('the')
+		the_frequency = reader.unigram_dictionary.get_probability(the_token)
+		expected_keep_ratio = np.sqrt(self.t/the_frequency)
+		actual_keep_ratio = signal_query_frequency / float(num_the_tokens)
+		self.assertTrue(abs(actual_keep_ratio - expected_keep_ratio) < tolerance)
+
+
+	def get_the_query_frequency(self):
+		# Generate the dataset, and see how many times the actually appears
+		# as a query word
+		reader = self.dataset_reader_with_discard
+		dataset = reader.generate_dataset()
+		seen_noise_queries = Counter()
+		num_the_signals = 0
+		num_the_noises = 0
+		the_token = reader.unigram_dictionary.get_id('the')
+		for signal_examples, noise_examples in self.iterate_dataset(dataset):
+
+			# Count number of times "the" occurs as query in signal_examples
+			signal_queries = signal_examples[:,0]
+			num_the_signals += sum([t == the_token for t in signal_queries])
+
+			# Count number of times "the" occurs as query in noise_examples
+			noise_queries = noise_examples[:,0]
+			num_the_noises += sum([t == the_token for t in noise_queries])
+
+		return num_the_signals, num_the_noises
+
+
+	def test_dataset_composition(self):
+		'''
+		Make sure that the minibatches are the correct size, that
+		signal query- and contexts-words are always within 5 tokens of
+		one another and come from the same sentence.
+		'''
+		# Ensure reproducibility in this stochastic test
+		np.random.seed(1)
+
+		reader = self.dataset_reader_no_discard
+		reader.prepare()
+
+		# Iterate through the corpus, noting what tokens arise within
+		# one another's contexts.  Build a lookup table, indicating the set of
+		# "legal pairs" -- tokens that arose in one another's context.
+		legal_pairs = defaultdict(set)
+		# We'll also keep track of the query words in the signal examples
+		# To make sure that noise examples are also made for them
+		expected_noise_queries = Counter()
+		d = reader.unigram_dictionary
+		for filename in self.files:
+			for tokens in default_parse(filename):
+				token_ids = d.get_ids(tokens)
+				for i, token_id in enumerate(token_ids):
+					low = max(0, i-5)
+					legal_context = token_ids[low:i] + token_ids[i+1:i+6]
+					legal_pairs[token_id].update(legal_context)
+					# Every time a token appears we expect noise_ratio noise examples for it
+					expected_noise_queries[token_id] += self.noise_ratio
+
+		# finally, and the pair (UNK, UNK), which is used to pad data
+		legal_pairs[UNK] = set([UNK])
+
+		reader.prepare()
+		dataset = reader.generate_dataset()
+		seen_noise_queries = Counter()
+		for signal_examples, noise_examples in self.iterate_dataset(dataset):
+
+			# Keep track of how many times each token appears as the query in a noise example
+			noise_queries = noise_examples[:,0]
+			seen_noise_queries.update(noise_queries)
+
+			# Ensure that all of the signal examples are actually valid
+			# samples from the corpus
+			for query, context in signal_examples:
+				self.assertTrue(context in legal_pairs[query])
+
+		# Ensure that we got the expected number of appearances of tokens in
+		# noise examples.  But since we don't care about the number of times that
+		# UNK appears (since it is used for padding), we remove it from observed
+		# counts first
+		del seen_noise_queries[UNK]
+		for key in set(seen_noise_queries.keys() + expected_noise_queries.keys()):
+			self.assertEqual(seen_noise_queries[key], expected_noise_queries[key])
+
+
+	def iterate_dataset(self, dataset):
+		'''
+		Given a dataset, separate out successive signal and noise examples,
+		and iterate through them
+		'''
+		window_size = self.batch_size * ( 1 + self.noise_ratio )
+		for pointer in range(0, len(dataset), window_size):
+			signal_examples = dataset[pointer : pointer + self.batch_size]
+			noise_examples = dataset[pointer + self.batch_size : pointer + window_size]
+			yield signal_examples, noise_examples
 
 
 	def test_prepare(self):
 		'''
-		Check that Word2VecMinibatcher.prepare() properly makes a 
+		Check that DatasetReader.prepare() properly makes a
 		UnigramDictionary that reflects the corpus.
 		'''
-		self.generator.prepare()
-		d = self.generator.unigram_dictionary
+		reader = self.dataset_reader_with_discard
+		reader.prepare()
+		d = reader.unigram_dictionary
 
-		# Make sure that all of the expected tokens are found in the 
+		# Make sure that all of the expected tokens are found in the
 		# unigram_dictionary, and that their frequency in the is correct.
 		tokens = []
 		for filename in self.files:
@@ -948,236 +1095,317 @@ class TestMinibatcher(TestCase):
 			self.assertEqual(count, counts[token])
 
 
-	def test_unique_minibatch_noise(self):
+	def test_noise_uniqueness(self):
 		'''
 		A bug was discovered whereby, when batches are yielded via the
-		asynchronous method (i.e. via the iterator returned by 
+		asynchronous method (i.e. via the iterator returned by
 		Minibatcher.get_async_batch_iterator()), different example
-		generating processes will generate the same sequence of noise 
+		generating processes will generate the same sequence of noise
 		contexts, because each example generating process inherits the
-		same numpy random number generating state.  This test exposes the 
+		same numpy random number generating state.  This test exposes the
 		but, so that it could be fixed.
 		'''
 
 		# Ensure reproducibility in this stochastic test
 		np.random.seed(1)
 
+		reader = self.dataset_reader_no_discard
+		reader.prepare()
+		dataset = reader.generate_dataset()
+
 		# Iterate through all examples in the dataset.  Look at each of
-		# the noise examples generated.  Each query word should have 
-		# noise_ratio number of noise contexts generated.  No two 
-		# query words should get the same sequence of noise sequences, 
+		# the noise examples generated.  Each query word should have
+		# noise_ratio number of noise contexts generated.  No two
+		# query words should get the same sequence of noise sequences,
 		# which is what we want to test.  Collect the sequence of noise
 		# contexts for each query word, and check they are unique
-		noise_sequences = set()
+		noise_sequences = defaultdict(list)
 		last_query = None
-		for signal_batch, noise_batch in self.preloaded_generator:
-			for row in noise_batch:
-
+		for signal_examples, noise_examples in self.iterate_dataset(dataset):
+			for row in noise_examples:
 				query, context = row
+				# We don't care about noise generated for UNK queries: they will
+				# certainly repeat because UNK is used for padding
+				if query == UNK:
+					continue
+				noise_sequences[query].append(context)
 
-				# So long as teh query remains constant, we bundle all
-				# of the contexts associated to it into the same 
-				# "noise_sequence".  So we use a change in query to signal
-				# that a new noise sequence has started.
-				if last_query != query:
 
-					# Finish the previous noise sequence, check uniqueness
-					if last_query is not None:
+		# Now iterate through all of the accumulated noise sequences, and
+		# ensure that we don't see any duplicates
+		seen_noise_sequences = set()
+		for key in noise_sequences:
 
-						# Convert noise sequence to tuple so its hashable
-						noise_sequence = tuple(noise_sequence)
+			# The full sequence involves noise sequences for multiple instances
+			# of the query.  Divide it into chunks, where each is the noise
+			# sequence for an individual instance
+			full_sequence = noise_sequences[key]
+			instance_sequences = [
+				tuple(full_sequence[i:i+self.noise_ratio])
+				for i in xrange(0, len(full_sequence), self.noise_ratio)
+			]
 
-						# Ensure the noise sequence is novel
-						novel = noise_sequence not in noise_sequences
-						self.assertTrue(novel)
-
-						# Now add this sequence to the list
-						noise_sequences.add(tuple(noise_sequence))
-
-					# Start a new noise sequence
-					noise_sequence = []
-
-				# Append the noise context to the current noise sequence
-				noise_sequence.append(context)
-				last_query = query
-
-		# Test the final noise sequence
-		noise_sequence = tuple(noise_sequence)
-		novel = noise_sequence not in noise_sequences
-		self.assertTrue(novel)
+			# Check if any of these sequences happened already, and add it to
+			# the list of seen noise sequences
+			for sequence in instance_sequences:
+				self.assertFalse(sequence in seen_noise_sequences)
+				seen_noise_sequences.add(sequence)
 
 
 
-	def test_symbolic_minibatches(self):
+	def test_save_load_data(self):
 		'''
-		The symbolic minibatching mechanism should yield the exact same
-		set of examples as the non-symbolic mechanism.  Here we compare
-		them to make sure that is the case.
+		Test that save and load actually write and read the Word2VecEmbedder's
+		parameters, by testing that a saved and then then loaded model yields
+		the same model as the original.
 		'''
-		# Ensure reproducibility in this stochastic test
-		np.random.seed(1)
 
-		# Get the symbolic minibatch
-		batch_spec = self.preloaded_generator.get_symbolic_minibatch()
-		symbolic_signal, symbolic_noise, updates = batch_spec
+		# Remove any saved file that may be left over from a previous run
+		directory = 'test-data/test-dataset-reader'
+		path = os.path.join(directory, 'data.npz')
+		if os.path.exists(path):
+			os.remove(path)
 
-		# Make a batching function.  This is a somewhat trivial function:
-		# all it does is pull out the minibatch.  But it simulates 
-		# accessing the minibatch in a theano compiled function which 
-		# incorporates incrementing the minibatch iteration number as an
-		# update
-		get_batch = function(
-			[],[symbolic_signal, symbolic_noise],
-			updates=updates
+		reader = DatasetReader(
+			files=['test-data/test-corpus/numbers-med.txt'], t=1,
+			num_processes = 2
+		)
+		reader.prepare()
+		reader.generate_dataset()
+		reader.save_data(directory)
+
+		new_reader = DatasetReader()
+		new_reader.load_data(directory)
+
+		print new_reader.examples
+		self.assertTrue(np.array_equal(new_reader.examples, reader.examples))
+
+		# Remove the saved file
+		#os.remove(path)
+
+
+
+class TestMinibatcher(TestCase):
+
+	def setUp(self):
+
+		# Define some parameters to be used in construction
+		# Minibatcher
+		self.files = [
+			'test-data/test-corpus/003.tsv',
+			'test-data/test-corpus/004.tsv'
+		]
+		self.batch_size = 5
+		self.noise_ratio = 15
+		self.num_example_generators = 3
+		self.t = 0.03
+
+		self.dataset_reader_with_discard = DatasetReader(
+			files=self.files,
+			batch_size = self.batch_size,
+			noise_ratio = self.noise_ratio,
+			t=self.t,
+			num_processes=3,
+			verbose=False
 		)
 
-		# Load the dataset
-		num_batches = self.preloaded_generator.load_dataset()
+		self.dataset_reader_no_discard = DatasetReader(
+			files=self.files,
+			batch_size = self.batch_size,
+			noise_ratio = self.noise_ratio,
+			t=1.0,
+			num_processes=3,
+			verbose=False
+		)
 
-		# Get every signal and noise example, and keep track of them
-		# all.  We'll check that we get the exact same examples from
-		# the symbolic and non-symbolic methods of minibatching
-		symbolic_signal_counter = Counter()
-		symbolic_noise_counter = Counter()
-		for batch_num in range(num_batches):
-			signal, noise = get_batch()
-			for row in signal:
-				symbolic_signal_counter[tuple(row)] += 1
-
-			for row in noise:
-				symbolic_noise_counter[tuple(row)] += 1
-
-		# We will now generate the minibatches, but serve them 
-		# non-symbolically.  Ensure the same randomness seeds this process
-		# so that we can expect the same examples to be chosen.
-		np.random.seed(1)
-
-		# Generate minibatches using the minibatcher's non-symbolic
-		# asynchronous minibatching approach
-		signal_counter = Counter()
-		noise_counter = Counter()
-		for signal_batch, noise_batch in self.preloaded_generator:
-			for row in signal_batch:
-				signal_counter[tuple(row)] += 1
-			for row in noise_batch:
-				noise_counter[tuple(row)] += 1
-
-		# now check that we have all of the same examples
-		self.assertEqual(symbolic_signal_counter, signal_counter)
-		self.assertEqual(symbolic_noise_counter, noise_counter)
-
-
-
-	def test_minibatches(self):
+	def test_dataset_composition(self):
 		'''
-		Make sure that the minibatches are the correct size, that 
+		Make sure that the minibatches are the correct size, that
 		signal query- and contexts-words are always within 5 tokens of
 		one another and come from the same sentence.
 		'''
 		# Ensure reproducibility in this stochastic test
 		np.random.seed(1)
 
-		# Before looking at the minibatches, we need to determine what 
-		# query-context pairs are possible.
-		# To do that, first read in the corpus, and break it into lines
-		# and tokens
-		lines = []
+		reader = self.dataset_reader_no_discard
+		reader.prepare()
 
-		# Go through the corpus and get all the token ids as a list
-		tokenized_lines = []
+		# Iterate through the corpus, noting what tokens arise within
+		# one another's contexts.  Build a lookup table, indicating the set of
+		# "legal pairs" -- tokens that arose in one another's context.
+		legal_pairs = defaultdict(set)
+		# We'll also keep track of the query words in the signal examples
+		# To make sure that noise examples are also made for them
+		expected_noise_queries = Counter()
+		d = reader.unigram_dictionary
 		for filename in self.files:
 			for tokens in default_parse(filename):
-				tokenized_lines.append(tokens)
+				token_ids = d.get_ids(tokens)
+				for i, token_id in enumerate(token_ids):
+					low = max(0, i-5)
+					legal_context = token_ids[low:i] + token_ids[i+1:i+6]
+					legal_pairs[token_id].update(legal_context)
+					# Every time a token appears we expect noise_ratio noise examples for it
+					expected_noise_queries[token_id] += self.noise_ratio
 
-		# Now iterate through the lines, noting what tokens arise within
-		# one another's contexts.  Build a lookup table providing the set
-		# of token_ids that arose in the context of each given token_id
-		legal_pairs = defaultdict(set)
-		d = self.preloaded_generator.unigram_dictionary
-		for line in tokenized_lines:
-			token_ids = d.get_ids(line)
-			for i, token_id in enumerate(token_ids):
-				low = max(0, i-5)
-				legal_context = token_ids[low:i] + token_ids[i+1:i+6]
-				legal_pairs[token_id].update(legal_context)
+		# finally, and the pair (UNK, UNK), which is used to pad data
+		legal_pairs[UNK] = set([UNK])
 
-		# finally, add UNK to the legal pairs
-		legal_pairs[0] = set([0])
+		# Make a minibatcher
+		batch_size = self.batch_size * (self.noise_ratio + 1)
+ 		minibatcher = TheanoMinibatcher(batch_size, dtype='int32', num_dims=2)
+		symbolic_batch, updates = minibatcher.get_batch(), minibatcher.get_updates()
 
-		for signal_batch, noise_batch in self.preloaded_generator:
+		# Load the dataset
+		num_batches = minibatcher.load_dataset(reader.generate_dataset())
 
-			self.assertEqual(len(signal_batch), self.batch_size)
-			self.assertEqual(
-				len(noise_batch), self.batch_size * self.noise_ratio
-			)
+		# Mock a theano training function.  The function simply returns the
+		# current minibatch, so we can check that the minibatches have the
+		# expected composition
+		f = function([], symbolic_batch, updates=updates)
+
+		# Iterate through the minibatches, to check that they have expected composition
+		seen_noise_queries = Counter()
+		for i in range(num_batches):
+
+			# Get the batch, and split it into the noise and signal parts
+			batch = f()
+			signal_examples = batch[0:self.batch_size, ]
+			noise_examples = batch[self.batch_size:self.batch_size*(self.noise_ratio+1), ]
+
+			# Keep track of how many times each token appears as the query in a noise example
+			noise_queries = noise_examples[:,0]
+			seen_noise_queries.update(noise_queries)
 
 			# Ensure that all of the signal examples are actually valid
 			# samples from the corpus
-			for query_token_id, context_token_id in signal_batch:
-				self.assertTrue(
-					context_token_id in legal_pairs[query_token_id]
-				)
+			for query, context in signal_examples:
+				self.assertTrue(context in legal_pairs[query])
 
-	def test_token_discarding(self):
+		# Ensure that we got the expected number of appearances of tokens in
+		# noise examples.  But since we don't care about the number of times that
+		# UNK appears (since it is used for padding), we remove it from observed
+		# counts first
+		del seen_noise_queries[UNK]
+		for key in set(seen_noise_queries.keys() + expected_noise_queries.keys()):
+			self.assertEqual(seen_noise_queries[key], expected_noise_queries[key])
 
-		# Ensure reproducibility for the test
+
+	def test_symbolic_minibatches(self):
+		'''
+		Test that the symbolic minibatching mechanism yields the expected
+		batches when used in a compiled theno function.
+		'''
+		# Ensure reproducibility in this stochastic test
 		np.random.seed(1)
 
-		# Get the preloaded generator and its unigram_dictionary
-		self.preloaded_generator
-		d = self.preloaded_generator.unigram_dictionary
+		# Make a TheanoMinibatcher; get the symbolic minibatch and updates
+		batch_size = 5
+		num_batches = 10
+		num_examples = batch_size * num_batches
+		dtype = 'int32'
+		num_dims = 2
+		batcher = TheanoMinibatcher(batch_size, dtype, num_dims)
+		symbolic_batch = batcher.get_batch()
+		updates = batcher.get_updates()
 
-		# Go through the corpus and get all the token ids as a list
-		token_ids = []
-		for filename in self.files:
-			for tokens in default_parse(filename):
-				token_ids.extend(d.get_ids(tokens))
+		# Mock a training function.  It just returns the current batch.
+		f = function([], symbolic_batch, updates=updates)
 
-		# Run through the tokens, evaluating 
-		# Word2VecMinibatcher.do_discard() on each.  Keep track of all 
-		# "discarded" tokens for which do_discard() returns True
-		discarded = []
-		num_replicates = 100
-		for replicates in range(num_replicates):
-			for token_id in token_ids:
-				if self.preloaded_generator.do_discard(token_id):
-					discarded.append(token_id)
+		# Load a mock dataset
+		dataset = np.array([[i,i] for i in range(num_examples)], dtype=dtype)
+		actual_num_batches = batcher.load_dataset(dataset)
 
-		# Count the tokens, and the discarded tokens.  
-		discarded_counts = Counter(discarded)
-		token_counts = Counter(token_ids)
+		# Check that we have the expected number of batches
+		self.assertEqual(actual_num_batches, num_batches)
 
-		# Compute the frequency of the word "the", and the frequency
-		# with which it was discarded
-		the_id = d.get_id('the')
-		num_the_appears = token_counts[the_id]
-		the_frequency = num_the_appears/float(len(token_ids))
-		num_the_discarded = discarded_counts[the_id]
-		frequency_of_discard = (
-			num_the_discarded / float(num_the_appears * num_replicates)
-		)
+		for batch_num in range(actual_num_batches):
+			batch = f()
+			start, stop = batch_size*batch_num, batch_size*(batch_num+1)
+			expected_batch = np.array([[i,i] for i in range(start, stop)], dtype=dtype)
+			self.assertTrue(np.array_equal(batch, expected_batch))
 
-		# What was actually the most discarded token?  It should be "the"
-		most_discarded_id, num_most_discarded = (
-			discarded_counts.most_common()[0]
-		)
-		self.assertEqual(most_discarded_id, the_id)
 
-		# What was the expected frequency with which "the" would be 
-		# discarded?  Assert it is close to the actual discard rate.
-		expected_frequency = 1 - np.sqrt(self.t / the_frequency)
-		tolerance = 0.015
-		self.assertTrue(
-			abs(expected_frequency - frequency_of_discard) < tolerance
-		)
+	def test_data_container_initialization(self):
+
+		# Make a minibatcher so we can test its _initialize_data_container method
+		batcher = TheanoMinibatcher()
+
+		# Test the method at various parameter values
+		float32_1 = batcher._initialize_data_container(1,'float32')
+		uint32_2 = batcher._initialize_data_container(2,'uint32')
+		float64_3 = batcher._initialize_data_container(3,'float64')
+
+		# Mock the expected results
+		expected_float32_1 = np.array([],dtype='float32')
+		expected_uint32_2 = np.array([[]],dtype='uint32')
+		expected_float64_3 = np.array([[[]]],dtype='float64')
+
+		# Ensure we got the expected results
+		self.assertTrue(np.array_equal(float32_1, expected_float32_1))
+		self.assertTrue(np.array_equal(uint32_2, expected_uint32_2))
+		self.assertTrue(np.array_equal(float64_3, expected_float64_3))
+
+		# The number of dimensions in a loaded dataset needs to match the number
+		# of dimensions given to the TheanoMinibatcher constructor
+		batcher = TheanoMinibatcher(num_dims=3, dtype='float32')
+		# This works
+		batcher.load_dataset(np.array([[[1.0,2.0]]], dtype='float32'))
+		# But not this
+		with self.assertRaises(TypeError):
+			batcher.load_dataset(np.array([[1.0,2.0]], dtype='float32'))
+
+		# Trying to initialize a 0-dimensional dataset should raise a ValueError
+		with self.assertRaises(ValueError):
+			int32_0 = batcher._initialize_data_container(0,'int32')
+
+
+	def test_symbolic_minibatches_more_dims(self):
+		'''
+		Test that the symbolic minibatching mechanism yields the expected
+		batches when used in a compiled theno function, and specifically test
+		using a non-default number of dimensions in the dataset.
+		'''
+		# Ensure reproducibility in this stochastic test
+		np.random.seed(1)
+
+		# Make a TheanoMinibatcher; get the symbolic minibatch and updates
+		batch_size = 5
+		num_batches = 10
+		num_examples = batch_size * num_batches
+		dtype = 'int32'
+		num_dims = 3
+		batcher = TheanoMinibatcher(batch_size, dtype, num_dims)
+		symbolic_batch = batcher.get_batch()
+		updates = batcher.get_updates()
+
+		# Mock a training function.  It just returns the current batch.
+		f = function([], symbolic_batch, updates=updates)
+
+		# Load a mock dataset
+		dataset = np.array([ [[i,i,i] for j in range(2)] for i in range(num_examples)], dtype=dtype)
+		actual_num_batches = batcher.load_dataset(dataset)
+
+		# Check that we have the expected number of batches
+		self.assertEqual(actual_num_batches, num_batches)
+
+		for batch_num in range(actual_num_batches):
+			batch = f()
+			start, stop = batch_size*batch_num, batch_size*(batch_num+1)
+			expected_batch = np.array(
+				[[ [i,i,i] for j in range(2)] for i in range(start, stop)],
+				dtype=dtype
+			)
+			self.assertTrue(np.array_equal(batch, expected_batch))
 
 
 
 class TestWord2VecOnCorpus(TestCase):
 	'''
-	This tests the Word2Vec end-to-end functionality applied to a text 
+	This tests the Word2Vec end-to-end functionality applied to a text
 	corpus.
 	'''
+
 
 	def test_word2vec_on_corpus(self):
 
@@ -1185,19 +1413,21 @@ class TestWord2VecOnCorpus(TestCase):
 		np.random.seed(1)
 
 		word2vec_embedder, dictionary = word2vec(
-			files=['test-data/test-corpus/numbers-long.txt'],
+			#files=['test-data/test-corpus/numbers-long.txt'],
+			files=['test-data/test-corpus/numbers-short.txt'],
 			num_epochs=1,
-			t=1, 
+			t=1,
 			batch_size = 10,
 			num_embedding_dimensions=5,
-			verbose=False,
+			verbose=True,
 		)
+
 
 		W, C = word2vec_embedder.get_param_values()
 		dots = usigma(np.dot(W,C.T))
 
-		# Based on the construction of the corpus, the following 
-		# context embeddings should match the query at right and be 
+		# Based on the construction of the corpus, the following
+		# context embeddings should match the query at right and be
 		# the highest value in the product of the embedding matrices
 		# Note that token 0 is reserved for UNK.  It's embedding stays
 		# near the randomly initialized value, tending to yield of 0.5
@@ -1205,17 +1435,17 @@ class TestWord2VecOnCorpus(TestCase):
 		# word
 		expected_tops = [
 			[0,2,3], # these contexts are good match to query 1
-			[0,1,3], # these contexts are good match to query 2 
-			[0,1,2], # these contexts are good match to query 3 
-			[0,5,6], # these contexts are good match to query 4 
-			[0,4,6], # these contexts are good match to query 5 
-			[0,4,5], # these contexts are good match to query 6 
-			[0,8,9], # these contexts are good match to query 7 
-			[0,7,9], # these contexts are good match to query 8 
-			[0,7,8], # these contexts are good match to query 9 
+			[0,1,3], # these contexts are good match to query 2
+			[0,1,2], # these contexts are good match to query 3
+			[0,5,6], # these contexts are good match to query 4
+			[0,4,6], # these contexts are good match to query 5
+			[0,4,5], # these contexts are good match to query 6
+			[0,8,9], # these contexts are good match to query 7
+			[0,7,9], # these contexts are good match to query 8
+			[0,7,8], # these contexts are good match to query 9
 			[0,11,12], # these contexts are good match to query 10
-			[0,10,12], # these contexts are good match to query 11 
-			[0,10,11]  # these contexts are good match to query 12 
+			[0,10,12], # these contexts are good match to query 11
+			[0,10,11]  # these contexts are good match to query 12
 		]
 
 		for i in range(1, 3*4+1):
@@ -1233,8 +1463,8 @@ class TestWord2VecOnCorpus(TestCase):
 class TestWord2Vec(TestCase):
 
 	'''
-	This tests comnponent Word2Vec functionality by supplying 
-	synthetic numerical data into its components, to make sure that 
+	This tests comnponent Word2Vec functionality by supplying
+	synthetic numerical data into its components, to make sure that
 	the solutions are mathematically correct.  It doesn't test iteration
 	over an actual text corpus, which is tested by TestWord2VecOnCorpus.
 	'''
@@ -1254,108 +1484,116 @@ class TestWord2Vec(TestCase):
 		# Artificially adopt this word embedding matrix for query words
 		self.QUERY_EMBEDDING = np.array([
 			[-0.04576914, -0.26519672, -0.06857708, -0.23748968],
-			[ 0.08540803,  0.32099229, -0.19136694, -0.48263541],  
+			[ 0.08540803,  0.32099229, -0.19136694, -0.48263541],
 			[-0.33319689,  0.26062664,  0.06826347, -0.39083191]
 		])
 
 		# Artificially adopt this word embedding matrix for context words
 		self.CONTEXT_EMBEDDING = np.array([
 			[-0.29474795, -0.2559814 , -0.04503929,  0.35159791],
-			[ 0.00963128,  0.22368461,  0.44933862,  0.48584304], 
+			[ 0.00963128,  0.22368461,  0.44933862,  0.48584304],
 			[ 0.05338832, -0.22895403, -0.08288041, -0.47226618],
 		])
 
-		# This is the expected result if we use the TEST_QUERY_INPUT,
-		# and TEST_CONTEXT_INPUT as inputs and if we use, as 
-		# initializations for the embedding weights, 
-		#the QUERY_EMBEDDING and CONTEXT_EMBEDDING
-		self.EXPECTED_DOTS = np.array([
-			[ 0.1769407 , -0.2194758 ,  0.04109232,  0.1769407 , 
-				-0.2194758 , 0.04109232],
-			[-0.09276679,  0.21486867, -0.25680422, -0.09276679,  
-				0.21486867, -0.25680422]
-		])
- 
-		# This is the expected result if we use the TEST_QUERY_INPUT
-		# and TEST_CONTEXT_INPUT after modifying word_embedding matrix
-		# by adding 10 elementwise
-		self.ALT_EXPECTED_DOTS = np.array([
-			[2.4208559 ,  11.1055778 , -10.86122348,   2.4208559 ,
-				11.1055778 , -10.86122348],
-			[11.23228681, -10.68744713,   1.98711098,  11.23228681,
-				-10.68744713,   1.98711098]
-		])
 
 
-	# TODO: finish this
-	def test_save_load(self):
+	def test_save_load_dictionary(self):
+		'''
+		Test that save and load actually write and read the Word2VecEmbedder's
+		parameters, by testing that a saved and then then loaded model yields
+		the same model as the original.
+		'''
 
-		input_var = T.imatrix('input_var')
+		# Remove any saved file that may be left over from a previous run
+		if os.path.exists('test-data/test-Word2VecEmbedder.npz'):
+			os.remove('test-data/test-Word2VecEmbedder.npz')
 
+		# Make a Word2VecEmbedder with pre-specified query and context
+		# embeddings
+		mock_input = shared(np.array([[]], dtype='int32'))
 		embedder = Word2VecEmbedder(
-			input_var,
+			mock_input,
 			batch_size=len(self.TEST_INPUT),
 			vocabulary_size=self.VOCAB_SIZE,
 			num_embedding_dimensions=self.NUM_EMBEDDING_DIMENSIONS,
 			word_embedding_init=self.QUERY_EMBEDDING,
 			context_embedding_init=self.CONTEXT_EMBEDDING
 		)
+		embedder.save('test-data/test-Word2VecEmbedder.npz')
 
-		W, C = embedder.get_param_values()
+		# Create a new embedder, and attempt to load from file
+		embedder = Word2VecEmbedder(
+			mock_input,
+			batch_size=len(self.TEST_INPUT),
+			vocabulary_size=self.VOCAB_SIZE,
+			num_embedding_dimensions=self.NUM_EMBEDDING_DIMENSIONS,
+		)
+		embedder.load('test-data/test-Word2VecEmbedder.npz')
+
+		W, C = embedder.get_params()
+
+		self.assertTrue(np.allclose(self.QUERY_EMBEDDING, W.get_value()))
+		self.assertTrue(np.allclose(self.CONTEXT_EMBEDDING, C.get_value()))
+
+		# Remove the saved file
+		os.remove('test-data/test-Word2VecEmbedder.npz')
+
 
 
 	def test_noise_contrastive_learning(self):
+		'''
+		Given a simple synthetic dataset, test that the Word2vecEmbedder,
+		coupled with a loss function from get_noise_contrastive_loss, produces
+		a trainable system that learns the theoretically ideal embeddings as
+		expected from [1].
+
+		[1] "Noise-contrastive estimation of unnormalized statistical models,
+			with applications to natural image statistics"
+			by Michael U Gutmann, and Aapo Hyvarinen
+		'''
 
 		# Seed randomness to make the test reproducible
 		np.random.seed(1)
 
+		# Make the positive input.  First component of each example is
+		# the query input, and second component is the context.  In the
+		# final embeddings that are learned, dotting these rows and columns
+		# respectively from the query and context embedding matrices should
+		# give higher values than any other row-column dot products.
+		signal_examples = [
+			[0,2], [1,3], [2,0], [3,1], [4,6], [5,7], [6,4], [7,5], [8,9], [9,8]
+		]
+
 		# Predifine the size of batches and the embedding
-		batch_size = 160
+		num_signal_examples = len(signal_examples)
+		num_noise_examples = 100
+		batch_size = num_signal_examples + num_noise_examples
 		vocab_size = 10
 		num_embedding_dimensions = 5
 
-		# Define the input theano variables
-		signal_input = T.imatrix('query_input')
-		noise_input = T.imatrix('noise_input')
+		# Mock a symbolic minibatch (it's empty but will be filled in a moment)
+		symbolic_batch = shared(np.array([[]], dtype='int32'))
 
-
-		# Make a NoiseContraster, and get the combined input
-		noise_contraster = NoiseContraster(signal_input, noise_input)
-		combined_input = noise_contraster.get_combined_input()
-
-		# Make a Word2VecEmbedder object, feed it the combined input
+		# Make a Word2VecEmbedder object, feed it the mocked batch
 		word2vec_embedder = Word2VecEmbedder(
-			combined_input,
+			symbolic_batch,
 			batch_size,
 			vocab_size,
 			num_embedding_dimensions,
 		)
 
-		# Get the params and output from the word2vec embedder, feed that
-		# back to the noise_contraster to get the training function
-		combined_output = word2vec_embedder.get_output()
+		# Get the params and output from the word2vec embedder
+		symbolic_output = word2vec_embedder.get_output()
 		params = word2vec_embedder.get_params()
-		train = noise_contraster.get_train_func(combined_output, params)
 
+		# Define the loss function, and get parameter updates based on it
+		loss = get_noise_contrastive_loss(symbolic_output, num_signal_examples)
+		updates = nesterov_momentum(loss, params, learning_rate=0.1, momentum=0.9)
 
-		# Make the positive input.  First component of each example is
-		# the query input, and second component is the context.  In the 
-		# final embeddings that are learned, dotting these rows and columns
-		# respectively from the query and context embedding matrices should
-		# give higher values than any other row-column dot products.
-		test_positive_input = np.array([
-			[0,2],
-			[1,3],
-			[2,0],
-			[3,1],
-			[4,6],
-			[5,7],
-			[6,4],
-			[7,5],
-			[8,9],
-			[9,8]
-		]).astype('int32')
-		
+		# Create the training function.  No inputs because the "inputs" are
+		# implemented as theano shared variables
+		train = function([], loss, updates=updates)
+
 		num_replicates = 5
 		num_epochs = 3000
 		embedding_products = []
@@ -1371,17 +1609,21 @@ class TestWord2Vec(TestCase):
 			#print '\t***'
 			for epoch in range(num_epochs):
 
-				# Sample new noise examples every epoch (this is better 
-				# than fixing the noise once at the start).
-				# Provide 15 negative examples for each query word
-				test_negative_input = np.array([
-					[i / 10, np.random.randint(0,10)] for i in range(100)
-				]).astype('int32')
+				# Sample new noise examples every epoch
+				noise_examples = [
+					[i / 10, np.random.randint(0,10)]
+					for i in range(num_noise_examples)
+				]
 
-				loss = train(
-					test_positive_input, test_negative_input
+				# Assemble and load the batch to the symbolic batch variable
+				batch_data = np.array(
+					signal_examples + noise_examples, dtype='int32'
 				)
-				#print loss
+				symbolic_batch.set_value(batch_data)
+
+				this_loss = train()
+				#if (epoch+1) % 500 == 0:
+				#	print this_loss
 
 			embedding_product = np.dot(W.get_value(), C.get_value().T)
 			embedding_products.append(usigma(embedding_product))
@@ -1391,10 +1633,10 @@ class TestWord2Vec(TestCase):
 
 		# We expect that the embeddings will allocate the most probability
 		# to the contexts that were provided for words in the toy data.
-		# We always provided a single context via batch_contexts 
+		# We always provided a single context via batch_contexts
 		# (e.g. context 2 provided for word 0), so we expect these contexts
 		# to be the maximum.
-		expected_max_prob_contexts = test_positive_input[:,1]
+		expected_max_prob_contexts = np.array(signal_examples)[:,1]
 		self.assertTrue(np.array_equal(
 			np.argmax(mean_embedding_products, axis=1),
 			expected_max_prob_contexts
@@ -1403,12 +1645,12 @@ class TestWord2Vec(TestCase):
 		# The dot product of a given word embedding and context embedding
 		# have an interpretation as the probability that that word and
 		# context derived from the toy data instead of the noise.
-		# See equation 3 in Noise-Contrastive Estimation of Unnormalized 
-		# Statistical Models, with Applications to Natural Image 
-		# StatisticsJournal of Machine Learning Research 13 (2012), 
+		# See equation 3 in Noise-Contrastive Estimation of Unnormalized
+		# Statistical Models, with Applications to Natural Image
+		# StatisticsJournal of Machine Learning Research 13 (2012),
 		# pp.307-361.
 		# That shows the probability should be around 0.5
-		# Since the actual values are stocastic, we check that the 
+		# Since the actual values are stocastic, we check that the
 		# average of repeated trials is within 0.25 - 0.75.
 		embedding_maxima = np.max(mean_embedding_products, axis=1)
 		self.assertTrue(all(
@@ -1423,186 +1665,11 @@ class TestWord2Vec(TestCase):
 		#print 'elapsed time:', time.time() - start
 
 
-
-	# TODO: re-implement this test without the defunct Word2Vec class
-	#def test_learning(self):
-
-	#	positive_input = T.imatrix('query_input')
-	#	negative_input = T.imatrix('noise_input')
-
-	#	# Predifine the size of batches and the embedding
-	#	batch_size = 160
-	#	vocab_size = 10
-	#	num_embedding_dimensions = 5
-
-	#	# Make a Word2Vec object
-	#	word2vec = Word2Vec(
-	#		batch_size,
-	#		vocabulary_size=vocab_size,
-	#		num_embedding_dimensions=num_embedding_dimensions,
-	#		learning_rate=0.1,
-	#		verbose=False
-	#	)
-
-	#	# Make the positive input.  First component of each example is
-	#	# the query input, and second component is the context.  In the 
-	#	# final embeddings that are learned, dotting these rows and columns
-	#	# respectively from the query and context embedding matrices should
-	#	# give higher values than any other row-column dot products.
-	#	test_positive_input = np.array([
-	#		[0,2],
-	#		[1,3],
-	#		[2,0],
-	#		[3,1],
-	#		[4,6],
-	#		[5,7],
-	#		[6,4],
-	#		[7,5],
-	#		[8,9],
-	#		[9,8]
-	#	]).astype('int32')
-	#	
-	#	num_replicates = 5
-	#	num_epochs = 3000
-	#	embedding_products = []
-	#	W, C = word2vec.get_params()
-	#	start = time.time()
-	#	for rep in range(num_replicates):
-	#		W.set_value(np.random.normal(
-	#			0, 0.01, (vocab_size, num_embedding_dimensions)
-	#		).astype(dtype='float32'))
-	#		C.set_value(np.random.normal(
-	#			0, 0.01, (vocab_size, num_embedding_dimensions)
-	#		).astype('float32'))
-	#		#print '\t***'
-	#		for epoch in range(num_epochs):
-
-	#			# Sample new noise examples every epoch (this is better than
-	#			# fixing the noise once at the start).
-	#			# Provide 15 negative examples for each query word
-	#			test_negative_input = np.array([
-	#				[i / 10, random.randint(0,9)] for i in range(100)
-	#			]).astype('int32')
-
-	#			loss = word2vec.train(
-	#				test_positive_input, test_negative_input
-	#			)
-	#			#print loss
-
-	#		embedding_product = np.dot(W.get_value(), C.get_value().T)
-	#		embedding_products.append(usigma(embedding_product))
-
-	#	mean_embedding_products = np.mean(embedding_products, axis=0)
-	#	#print np.round(mean_embedding_products, 2)
-
-	#	# We expect that the embeddings will allocate the most probability
-	#	# to the contexts that were provided for words in the toy data.
-	#	# We always provided a single context via batch_contexts 
-	#	# (e.g. context 2 provided for word 0), so we expect these contexts
-	#	# to be the maximum.
-	#	expected_max_prob_contexts = test_positive_input[:,1]
-	#	self.assertTrue(np.array_equal(
-	#		np.argmax(mean_embedding_products, axis=1),
-	#		expected_max_prob_contexts
-	#	))
-
-	#	# The dot product of a given word embedding and context embedding
-	#	# have an interpretation as the probability that that word and
-	#	# context derived from the toy data instead of the noise.
-	#	# See equation 3 in Noise-Contrastive Estimation of Unnormalized 
-	#	# Statistical Models, with Applications to Natural Image 
-	#	# StatisticsJournal of Machine Learning Research 13 (2012), 
-	#	# pp.307-361.
-	#	# That shows the probability should be around 0.5
-	#	# Since the actual values are stocastic, we check that the 
-	#	# average of repeated trials is within 0.25 - 0.75.
-	#	embedding_maxima = np.max(mean_embedding_products, axis=1)
-	#	self.assertTrue(all(
-	#		[x > 0.25 for x in embedding_maxima]
-	#	))
-	#	self.assertTrue(all(
-	#		[x < 0.75 for x in embedding_maxima]
-	#	))
-	#	#print 'average weight to correct pairs:', np.mean(
-	#	#	embedding_maxima
-	#	#)
-	#	#print 'elapsed time:', time.time() - start
-
-
-	# TODO: re-implement this test without the defunct Word2Vec class
-	#def test_positive_negative_separation(self):
-
-	#	vocabulary_size=100000,
-	#	num_embedding_dimensions=500,
-	#	word_embedding_init=Normal(), 
-	#	context_embedding_init=Normal(),
-
-	#	embedder = Word2Vec(
-	#		batch_size=len(self.TEST_INPUT),
-	#		vocabulary_size=self.VOCAB_SIZE,
-	#		num_embedding_dimensions=self.NUM_EMBEDDING_DIMENSIONS,
-	#		word_embedding_init=self.QUERY_EMBEDDING,
-	#		context_embedding_init=self.CONTEXT_EMBEDDING
-	#	)
-
-	#	# Get Word2Vec's internal symbolic theano variables
-	#	positive_input = embedder.positive_input
-	#	negative_input = embedder.negative_input
-	#	positive_output = embedder.positive_output
-	#	negative_output = embedder.negative_output
-
-	#	# Compile the function connecting the symbolic inputs and outputs
-	#	# So that we can test the separation of the signal and noise 
-	#	# channels after they are processed by the underlying 
-	#	# Word2VecEmbedder
-	#	f = function(
-	#		[positive_input, negative_input],
-	#		[positive_output, negative_output]
-	#	)
-
-	#	# Calculate the positive and negative output
-	#	test_positive_input = self.TEST_INPUT[:6]
-	#	test_negative_input = self.TEST_INPUT[6:]
-	#	test_positive_output, test_negative_output = f(
-	#		test_positive_input, test_negative_input
-	#	)
-
-	#	# Calculate the expected embeddings and output
-	#	expected_query_embeddings = np.repeat(
-	#		self.QUERY_EMBEDDING, 3, axis=0
-	#	)
-	#	expected_context_embeddings = np.tile(
-	#		self.CONTEXT_EMBEDDING, (3,1)
-	#	)
-	#	expected_output = usigma(np.dot(
-	#		expected_query_embeddings, expected_context_embeddings.T
-	#	)).diagonal()
-	#	expected_positive_output = expected_output[:6]
-	#	expected_negative_output = expected_output[6:]
-
-	#	#print 'test_positive_output:'
-	#	#print test_positive_output
-	#	#print
-	#	#print 'expected_positive_output:'
-	#	#print expected_positive_output
-	#	#print
-	#	#print 'test_negative_output:'
-	#	#print test_negative_output
-	#	#print 
-	#	#print 'expected_negative_output:'
-	#	#print expected_negative_output
-	#	#print 
-
-	#	# Check for equality between all found and expected values
-	#	self.assertTrue(np.allclose(
-	#		test_positive_output, expected_positive_output
-	#	))
-	#	self.assertTrue(np.allclose(
-	#		test_negative_output, expected_negative_output
-	#	))
-
-
 	def test_Word2VecEmbedder(self):
+		'''
+		Test that the architecture defined by Word2VecEmbedder generates the
+		expected theano expressions for embedded inputs and for final output
+		'''
 
 		input_var = T.imatrix('input_var')
 
@@ -1622,7 +1689,7 @@ class TestWord2Vec(TestCase):
 		f = function([input_var], query_embedding)
 		g = function([input_var], context_embedding)
 		h = function([input_var], dots)
-		
+
 		# Calculate the embeddings and the output
 		query_embeddings = f(self.TEST_INPUT)
 		context_embeddings = g(self.TEST_INPUT)
@@ -1639,24 +1706,6 @@ class TestWord2Vec(TestCase):
 			expected_query_embeddings, expected_context_embeddings.T
 		)).diagonal()
 
-		#print 'found query embeddings:'
-		#print query_embeddings
-		#print
-		#print 'expected query embeddings:'
-		#print expected_query_embeddings
-		#print
-		#print 'found context embeddings:'
-		#print context_embeddings
-		#print 
-		#print 'expected context embeddings:'
-		#print expected_context_embeddings
-		#print 
-		#print 'found output:'
-		#print test_output
-		#print
-		#print 'expected output:'
-		#print expected_output
-
 		# Check for equality between all found and expected values
 		self.assertTrue(np.allclose(
 			query_embeddings, expected_query_embeddings
@@ -1668,6 +1717,5 @@ class TestWord2Vec(TestCase):
 
 
 
-if __name__=='__main__': 
+if __name__=='__main__':
 	main()
-	

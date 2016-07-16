@@ -23,7 +23,7 @@ setup(
 	# single-sourcing
     # the version across setup.py and the project code, see
     # https://packaging.python.org/en/latest/single_source_version.html
-    version='0.1.5',
+    version='0.2.0',
 
     description='word2vec using Theano and Lasagne',
     long_description=long_description,
@@ -70,5 +70,6 @@ setup(
 	},
 	install_requires=[
 		'numpy', 'scipy', 'theano', 'lasagne', 'iterable-queue', 
+		'categorical'
 	]
 )

@@ -1,14 +1,15 @@
-from noise_contrast import NoiseContraster
+from noise_contrast import get_noise_contrastive_loss
 import os
 import numpy as np
-from theano import tensor as T, function
+from theano import tensor as T, function, shared
 import lasagne
-from minibatcher import Word2VecMinibatcher
 from lasagne.layers import (
 	get_output, InputLayer, EmbeddingLayer, get_all_params,
 	get_all_param_values
 )
 from lasagne.init import Normal
+from lasagne.updates import nesterov_momentum
+from new_minibatcher import DatasetReader, TheanoMinibatcher
 
 
 def row_dot(matrixA, matrixB):
@@ -30,87 +31,113 @@ def word2vec(
 		noise_ratio=15,
 		kernel=[1,2,3,4,5,5,4,3,2,1],
 		t = 1.0e-5,
-		batch_size = 1000,
+		batch_size = 1000,  # Number of *signal* examples per batch
 		num_embedding_dimensions=500,
 		word_embedding_init=Normal(),
 		context_embedding_init=Normal(),
 		learning_rate=0.1,
 		momentum=0.9,
 		verbose=True,
-		num_example_generators=3
+		num_processes=3
 	):
 
 	'''
 	Helper function that handles all concerns involved in training
 	A word2vec model using the approach of Mikolov et al.  It surfaces
-	all of the options. 
+	all of the options.
 
-	For customizations going beyond simply tweeking existing options and 
-	hyperparameters, substitute this function by writing your own training 
+	For customizations going beyond simply tweeking existing options and
+	hyperparameters, substitute this function by writing your own training
 	routine using the provided classes.  This function would be a starting
 	point for you.
 	'''
 
-	# Make a Word2VecMinibatcher
-	minibatcher = Word2VecMinibatcher(
+	# Make a Word2VecMinibatcher, pass through parameters sent by caller
+	dataset_reader = DatasetReader(
 		files=files,
 		directories=directories,
 		skip=skip,
-		unigram_dictionary=unigram_dictionary,
+		batch_size=batch_size, # number of *signal_examples* per batch
 		noise_ratio=noise_ratio,
-		kernel=kernel,
 		t=t,
-		batch_size=batch_size,
-		verbose=verbose,
-		num_example_generators=num_example_generators
+		num_processes=num_processes,
+		unigram_dictionary=unigram_dictionary,
+		kernel=kernel,
+		verbose=verbose
 	)
 
-	# Prpare the minibatch generator 
+	# Prpare the minibatch generator
 	# (this produces the counter_sampler stats)
-	minibatcher.prepare(savedir=savedir)
+	print 'Generating dictionary'
+	dataset_reader.prepare(savedir=savedir)
 
-	# Define the input theano variables
-	signal_input = T.imatrix('query_input')
-	noise_input = T.imatrix('noise_input')
-
-	# Make a NoiseContraster, and get the combined input
-	noise_contraster = NoiseContraster(signal_input, noise_input)
-	combined_input = noise_contraster.get_combined_input()
+	# Make a symbolic minibatcher
+	# Note that the full batch includes noise_ratio number of noise examples#
+	# for every signal example, and the parameter "batch_size" here is interpreted
+	# as just the number of signal examples per batch; the full batch size is:
+	full_batch_size = batch_size * (1 + noise_ratio)
+	minibatcher = TheanoMinibatcher(
+		batch_size = full_batch_size,
+		dtype="int32",
+		num_dims=2
+	)
 
 	# Make a Word2VecEmbedder object, feed it the combined input
-	word2vec_embedder = Word2VecEmbedder(
-		input_var=combined_input,
-		batch_size=batch_size,
-		vocabulary_size=minibatcher.get_vocab_size(),
+	embedder = Word2VecEmbedder(
+		input_var=minibatcher.get_batch(),
+		batch_size=full_batch_size,
+		vocabulary_size=dataset_reader.get_vocab_size(),
 		num_embedding_dimensions=num_embedding_dimensions,
 		word_embedding_init=word_embedding_init,
 		context_embedding_init=context_embedding_init
 	)
 
-	# Get the params and output from the word2vec embedder, feed that
-	# back to the noise_contraster to get the training function
-	combined_output = word2vec_embedder.get_output()
-	params = word2vec_embedder.get_params()
-	train = noise_contraster.get_train_func(combined_output, params)
+	# Architectue is ready.  Make the loss function, and use it to create the
+	# parameter updates responsible for learning
+	loss = get_noise_contrastive_loss(embedder.get_output(), batch_size)
+	updates = nesterov_momentum(
+		loss, embedder.get_params(), learning_rate, momentum
+	)
+
+	# Include minibatcher updates, which cause the symbolic batch to move
+	# through the dataset like a sliding window
+	updates.update(minibatcher.get_updates())
+
+	# Use the loss function and the updates to compile a training function.
+	# Note that it takes no inputs because the dataset is fully loaded using
+	# theano shared variables
+	train = function([], loss, updates=updates)
+
+	print 'Generating dataset'
+	dataset = dataset_reader.generate_dataset()
+	print dataset
+	print 'Loading dataset'
+	# TODO: freeze the dataset (generate should take a freeze_dir parameter)
+	minibatcher.load_dataset(dataset)
+
+	#f = function([], embedder.get_output(), updates=minibatcher.get_updates())
+	#for batch_num in range(minibatcher.get_num_batches()):
+	#	print f()
 
 	# Iterate over the corpus, training the embeddings
 	for epoch in range(num_epochs):
 		if verbose:
 			print 'starting epoch %d' % epoch
 		losses = []
-		for signal_batch, noise_batch in minibatcher:
-			losses.append(train(signal_batch, noise_batch))
+		minibatcher.reset()
+		for batch_num in range(minibatcher.get_num_batches()):
+			losses.append(train())
 		if verbose:
 			print '\tAverage loss: %f' % np.mean(losses)
 
 	# Save the model (the embeddings) if savedir was provided
 	if savedir is not None:
 		embedings_filename = os.path.join(savedir, 'embeddings.npz')
-		word2vec_embedder.save(embeddings_filename)
+		embedder.save(embeddings_filename)
 
-	# Return the trained word2vec_embedder and the dictionary mapping tokens
+	# Return the trained embedder and the dictionary mapping tokens
 	# to ids
-	return word2vec_embedder, minibatcher.unigram_dictionary
+	return embedder, dataset_reader.unigram_dictionary
 
 
 
@@ -132,9 +159,9 @@ class Word2VecEmbedder(object):
 		self.num_embedding_dimensions = num_embedding_dimensions
 		self._embed = None
 
-		# Every row (example) in a batch consists of a query word and a 
+		# Every row (example) in a batch consists of a query word and a
 		# context word.  We need to learn separate embeddings for each,
-		# and so, the input will be separated into all queries and all 
+		# and so, the input will be separated into all queries and all
 		# contexts, and handled separately.
 		self.query_input = input_var[:,0]
 		self.context_input = input_var[:,1]
@@ -151,14 +178,14 @@ class Word2VecEmbedder(object):
 		# Make separate embedding layers for query and context words
 		self.l_embed_query = lasagne.layers.EmbeddingLayer(
 			incoming=self.l_in_query,
-			input_size=vocabulary_size, 
-			output_size=num_embedding_dimensions, 
+			input_size=vocabulary_size,
+			output_size=num_embedding_dimensions,
 			W=word_embedding_init
 		)
 		self.l_embed_context = lasagne.layers.EmbeddingLayer(
 			incoming=self.l_in_context,
-			input_size=vocabulary_size, 
-			output_size=num_embedding_dimensions, 
+			input_size=vocabulary_size,
+			output_size=num_embedding_dimensions,
 			W=context_embedding_init
 		)
 
@@ -166,8 +193,8 @@ class Word2VecEmbedder(object):
 		self.query_embedding = get_output(self.l_embed_query)
 		self.context_embedding = get_output(self.l_embed_context)
 
-		# We now combine the query and context embeddings, taking the 
-		# dot product between corresponding queries and contexts.  
+		# We now combine the query and context embeddings, taking the
+		# dot product between corresponding queries and contexts.
 		# We can express this as an element-wise multiplication between
 		# the array of all query embeddings with all context embeddings
 		# Summing along the rows of the resulting matrix yields the dot
@@ -189,13 +216,13 @@ class Word2VecEmbedder(object):
 		Return the vectorspace embedding for the token.
 
 		INPUTS
-		* token [int] or [iterable : int]: Integer representation of a 
+		* token [int] or [iterable : int]: Integer representation of a
 			single token (e.g. a word), or a list of tokens.
 		'''
 		if self._embed is None:
 			self._compile_embed()
 
-		# This function is overloaded to accept a single token_id or 
+		# This function is overloaded to accept a single token_id or
 		# a list thereof.  Resolve that here.
 		if isinstance(token_id, int):
 			token_ids = [token_id]
@@ -204,14 +231,14 @@ class Word2VecEmbedder(object):
 
 		return self._embed(token_ids)
 
-			
+
 
 	def _compile_embed(self):
 		'''
-		Compiles the embedding function.  This is a separate theano 
+		Compiles the embedding function.  This is a separate theano
 		function from that used during training of the network, but it
 		produces exactly the same embeddings.  After being compiled
-		once (usually the first time self.embed() is called), it will 
+		once (usually the first time self.embed() is called), it will
 		remain up-to-date, supplying the correct embeddings even if
 		more training occurs.  This is because it references the same
 		theano shared variables for its embedding parameters as the
@@ -227,8 +254,8 @@ class Word2VecEmbedder(object):
 		)
 		l_emb = lasagne.layers.EmbeddingLayer(
 			incoming=l_in,
-			input_size=self.vocabulary_size, 
-			output_size=self.num_embedding_dimensions, 
+			input_size=self.vocabulary_size,
+			output_size=self.num_embedding_dimensions,
 			W=self.l_embed_query.W
 		)
 		embedding = get_output(l_emb)
@@ -237,7 +264,7 @@ class Word2VecEmbedder(object):
 
 	def get_param_values(self):
 		'''
-		returns a list of the trainable parameters *values*, as 
+		returns a list of the trainable parameters *values*, as
 		np.ndarray's.
 		'''
 		return (
@@ -267,11 +294,10 @@ class Word2VecEmbedder(object):
 
 	def load(self, filename):
 		npfile = np.load(filename)
-		W_loaded, C_loaded = npfile['W'], npfile['C']
+		W_loaded, C_loaded = npfile['W'].astype('float32'), npfile['C'].astype('float32')
 
-		# Get the theano shared variables that are used to hold the 
+		# Get the theano shared variables that are used to hold the
 		# parameters, and fill them with the values just loaded
 		W_shared, C_shared = self.get_params()
 		W_shared.set_value(W_loaded)
 		C_shared.set_value(C_loaded)
-

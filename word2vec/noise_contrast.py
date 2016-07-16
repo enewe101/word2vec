@@ -7,10 +7,10 @@ def noise_contrast(signal, noise, scale=True):
 	'''
 	Takes the theano symbolic variables `signal` and `noise`, whose
 	elements are interpreted as probabilities, and creates a loss
-	function which rewards large probabilities in signal and penalizes 
+	function which rewards large probabilities in signal and penalizes
 	large probabilities in noise.
-	
-	`signal` and `noise` can have any shape.  Their contributions will be 
+
+	`signal` and `noise` can have any shape.  Their contributions will be
 	summed over all dimensions.
 
 	If `scale` is true, then scale the loss function by the size of the
@@ -24,56 +24,21 @@ def noise_contrast(signal, noise, scale=True):
 	loss = -objective
 
 	loss = loss / signal.shape[0]
-	
+
 	return loss
 
 
-class NoiseContraster(object):
+def get_noise_contrastive_loss(activation, num_signal, scale=True):
+	'''
+	Convenience function to get the noise_contrast expression by specifying a
+	single batch of outputs and giving the number of entries along axis 0,
+	corresponding to signal activations (all others are assumed to be noise)
+	activations.
 
-	def __init__(
-		self,
-		signal_input,
-		noise_input,
-		learning_rate=0.1,
-		momentum=0.9
-	):
-		self.signal_input = signal_input
-		self.noise_input = noise_input
-		self.learning_rate = learning_rate
-		self.momentum=momentum
-
-		self.combined = T.concatenate([
-			self.signal_input, self.noise_input
-		])
-
-	def get_combined_input(self):
-		return self.combined
-
-	def get_train_func(self, output, params):
-
-		# Split the output based on the size of the individual input streams
-		self.signal_output = output[:self.signal_input.shape[0]]
-		self.noise_output = output[self.signal_input.shape[0]:]
-
-		# Construct the loss based on Noise Contrastive Estimation
-		self.loss = noise_contrast(self.signal_output, self.noise_output)
-
-		# Get the parameter updates using stochastic gradient descent with
-		# nesterov momentum.  TODO: make the updates configurable
-		self.updates = lasagne.updates.nesterov_momentum(
-			self.loss,
-			params,
-			self.learning_rate,
-			self.momentum
-		)
-
-		self.train = function(
-			inputs=[self.signal_input, self.noise_input], 
-			outputs=self.loss,
-			updates=self.updates
-		)
-
-		return self.train
-
-
-
+	Differs from noise_contrast only in that noise contrast expects two
+	theano variables, one for signal activations and one for noise.  This means
+	the caller would have to separate signal from noise first.
+	'''
+	signal_activation = activation[0:num_signal,]
+	noise_activation = activation[num_signal:,]
+	return noise_contrast(signal_activation, noise_activation, scale)
