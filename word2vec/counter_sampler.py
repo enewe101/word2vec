@@ -69,12 +69,45 @@ class CounterSampler(object):
 		return self.get_sampler().total
 
 
-	def sample(self, shape=()):
-		'''
-		Draw a sample according to the counter_sampler probability
-		'''
+	#def sample(self, shape=()):
+	#	'''
+	#	Draw a sample according to the counter_sampler probability
+	#	'''
 
-		return self.get_sampler().sample(shape)
+	#	return self.get_sampler().sample(shape)
+
+	num_to_load = 10**5
+	def sample(self, shape=()):
+
+		size = shape[0]
+
+		if not hasattr(self, '_probs'):
+			self._probs = np.array(self.counts, dtype='float64')
+			self._probs = self._probs / np.sum(self._probs)
+
+		if not hasattr(self, '_np_sample'):
+			print 'making new sampler'
+			self._np_sample = np.random.choice(
+				a=len(self._probs), size=self.num_to_load, p=self._probs
+			)
+
+		if not hasattr(self, '_ptr'):
+			self._ptr = 0
+
+		self._ptr += size
+
+		if self._ptr >= len(self._np_sample):
+			print 'making new sampler'
+			self._np_sample = np.random.choice(
+				a=len(self._probs), size=self.num_to_load, p=self._probs
+			)
+			self._ptr = 0
+			return self.sample((size,))
+
+		else:
+			return self._np_sample[self._ptr - size: self._ptr]
+
+
 
 
 	def save(self, filename):

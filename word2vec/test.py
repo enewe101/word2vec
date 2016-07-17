@@ -1103,7 +1103,7 @@ class TestDataReader(TestCase):
 		generating processes will generate the same sequence of noise
 		contexts, because each example generating process inherits the
 		same numpy random number generating state.  This test exposes the
-		but, so that it could be fixed.
+		bug, so that it could be fixed.
 		'''
 
 		# Ensure reproducibility in this stochastic test
@@ -1153,6 +1153,7 @@ class TestDataReader(TestCase):
 
 
 
+
 	def test_save_load_data(self):
 		'''
 		Test that save and load actually write and read the Word2VecEmbedder's
@@ -1167,17 +1168,25 @@ class TestDataReader(TestCase):
 			os.remove(path)
 
 		reader = DatasetReader(
-			files=['test-data/test-corpus/numbers-med.txt'], t=1,
-			num_processes = 2
+			files=[
+				'test-data/test-corpus/numbers-med1.txt',
+				'test-data/test-corpus/numbers-med2.txt'
+			],
+			t=1, num_processes = 2
 		)
 		reader.prepare()
-		reader.generate_dataset()
-		reader.save_data(directory)
+
+		start = time.time()
+		print 'generting dataset serially'
+		reader.generate_dataset_serial(directory)
+		#print 'generting dataset serially'
+		#reader.generate_dataset_parallel(directory)
+		elapsed = time.time() - start
 
 		new_reader = DatasetReader()
 		new_reader.load_data(directory)
 
-		print new_reader.examples
+		print elapsed
 		self.assertTrue(np.array_equal(new_reader.examples, reader.examples))
 
 		# Remove the saved file
