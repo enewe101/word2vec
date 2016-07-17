@@ -266,17 +266,29 @@ class DatasetReader(object):
 		return sorted_examples
 
 
-	def generate_dataset_serial(self, compiled_dataset_dir):
+	def generate_dataset_serial(self, compiled_dataset_dir=None):
 		'''
 		Generate the dataset from files handed to the constructor.  A single
 		process is used, and all the data is stored in a single file at
 		'compiled_dataset_dir/examples/0.npz'.
 		'''
 
+		# This cannot be called before calling prepare(), unless a prepared
+		# UnigramDictionary was passed to the self's constructor
+		if not self.prepared:
+			raise DataSetReaderIllegalStateException(
+				"DatasetReader: generate_examples() cannot be called before "
+				"prepare() is called unless a prepared UnigramDictionary has "
+				"was passed into the DatasetReader's constructor."
+			)
+
 		# We save dataset in the "examples" subdir of the model_dir
-		save_dir = os.path.join(compiled_dataset_dir, 'examples')
-		if not os.path.exists(save_dir):
-			os.mkdir(save_dir)
+		if compiled_dataset_dir is not None:
+			save_dir = os.path.join(compiled_dataset_dir, 'examples')
+			if not os.path.exists(save_dir):
+				os.mkdir(save_dir)
+		else:
+			save_dir = None
 
 		# Generate the data for each file
 		file_iterator = self.generate_filenames()
@@ -284,9 +296,9 @@ class DatasetReader(object):
 		self.data_loaded = True
 
 		# Save the data
-		save_path = os.path.join(save_dir, '0.npz')
-		print save_path
-		np.savez(save_path, data=self.examples)
+		if save_dir is not None:
+			save_path = os.path.join(save_dir, '0.npz')
+			np.savez(save_path, data=self.examples)
 
 		# Return it
 		return self.examples
@@ -298,17 +310,28 @@ class DatasetReader(object):
 		macrobatch_queue.close()
 
 
-	def generate_dataset_parallel(self, compiled_dataset_dir):
+	def generate_dataset_parallel(self, compiled_dataset_dir=None):
 		'''
 		Parallel version of generate_dataset_serial.  Each worker is responsible
 		for saving its own part of the dataset to disk, called a macrobatch.
 		the files are saved at 'compiled_dataset_dir/examples/<batch-num>.npz'.
 		'''
+		# This cannot be called before calling prepare(), unless a prepared
+		# UnigramDictionary was passed to the self's constructor
+		if not self.prepared:
+			raise DataSetReaderIllegalStateException(
+				"DatasetReader: generate_examples() cannot be called before "
+				"prepare() is called unless a prepared UnigramDictionary has "
+				"was passed into the DatasetReader's constructor."
+			)
 
 		# We save dataset in the "examples" subdir of the model_dir
-		save_dir = os.path.join(compiled_dataset_dir, 'examples')
-		if not os.path.exists(save_dir):
-			os.mkdir(save_dir)
+		if compiled_dataset_dir is not None:
+			save_dir = os.path.join(compiled_dataset_dir, 'examples')
+			if not os.path.exists(save_dir):
+				os.mkdir(save_dir)
+		else:
+			save_dir = None
 
 		file_queue = IterableQueue()
 		macrobatch_queue = IterableQueue()
@@ -322,6 +345,9 @@ class DatasetReader(object):
 
 		# Start a bunch of worker processes
 		for process_num in range(self.num_processes):
+			# Hop to a new location in the random-number-generator's state chain
+			reseed()
+			# Start child process that generates a portion of the dataset
 			args = (
 				file_queue.get_consumer(),
 				macrobatch_queue.get_producer()
@@ -338,8 +364,9 @@ class DatasetReader(object):
 		# Retrieve the macrobatches from the workers, write them to file
 		macrobatches = []
 		for macrobatch_num, macrobatch in enumerate(macrobatch_consumer):
-			save_path = os.path.join(save_dir, '%d.npz' % macrobatch_num)
-			np.savez(save_path, data=macrobatch)
+			if save_dir is not None:
+				save_path = os.path.join(save_dir, '%d.npz' % macrobatch_num)
+				np.savez(save_path, data=macrobatch)
 			macrobatches.append(macrobatch)
 
 		# Concatenate the macrobatches, and return the dataset

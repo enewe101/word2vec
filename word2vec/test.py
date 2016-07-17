@@ -928,12 +928,17 @@ class TestDataReader(TestCase):
 
 	def test_illegal_state_exception(self):
 		'''
-		Calling generate_dataset() on a DatasetReader before calling prepare()
+		Calling generate_dataset_parallel() on a DatasetReader before calling prepare()
 		should raise a DataSetReaderIllegalStateException.
 		'''
 		reader = self.dataset_reader_with_discard
 		with self.assertRaises(DataSetReaderIllegalStateException):
-			reader.generate_dataset()
+			reader.generate_dataset_parallel()
+
+		with self.assertRaises(DataSetReaderIllegalStateException):
+			reader.generate_dataset_serial()
+
+
 
 
 	def test_token_discarding(self):
@@ -983,10 +988,10 @@ class TestDataReader(TestCase):
 
 
 	def get_the_query_frequency(self):
-		# Generate the dataset, and see how many times the actually appears
-		# as a query word
+		# Generate the dataset, and see how many times "the" appears as a query
+		# word.
 		reader = self.dataset_reader_with_discard
-		dataset = reader.generate_dataset()
+		dataset = reader.generate_dataset_parallel()
 		seen_noise_queries = Counter()
 		num_the_signals = 0
 		num_the_noises = 0
@@ -1038,7 +1043,7 @@ class TestDataReader(TestCase):
 		legal_pairs[UNK] = set([UNK])
 
 		reader.prepare()
-		dataset = reader.generate_dataset()
+		dataset = reader.generate_dataset_parallel()
 		seen_noise_queries = Counter()
 		for signal_examples, noise_examples in self.iterate_dataset(dataset):
 
@@ -1111,7 +1116,7 @@ class TestDataReader(TestCase):
 
 		reader = self.dataset_reader_no_discard
 		reader.prepare()
-		dataset = reader.generate_dataset()
+		dataset = reader.generate_dataset_parallel()
 
 		# Iterate through all examples in the dataset.  Look at each of
 		# the noise examples generated.  Each query word should have
