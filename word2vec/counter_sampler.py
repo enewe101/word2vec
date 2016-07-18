@@ -50,45 +50,48 @@ class CounterSampler(object):
 			self.add(idx)
 
 
-	def get_sampler(self):
+	def ensure_prepared(self):
+
+		if self.sampler_ready:
+			return
+
 		if len(self.counts) < 1:
 			raise CounterSamplerException(
 				'Cannot sample if no counts have been made'
 			)
 
 		if not self.sampler_ready:
-			self._sampler = Categorical(self.counts)
+			self.total = np.sum(self.counts)
+			self.probabilities = np.array(self.counts) / float(self.total)
 			self.sampler_ready = True
-
-		return self._sampler
 
 
 	def get_total_counts(self):
-		return self.get_sampler().total
+		self.ensure_prepared()
+		return self.total
+
+
 	def __len__(self):
-		return self.get_sampler().total
+		self.ensure_prepared()
+		return self.total
 
-
-	#def sample(self, shape=()):
-	#	'''
-	#	Draw a sample according to the counter_sampler probability
-	#	'''
-
-	#	return self.get_sampler().sample(shape)
 
 	num_to_load = 10**5
-	def sample(self, shape=()):
+	def sample(self, shape=None):
 
-		size = shape[0]
+		if shape is not None:
+			size = np.prod(shape)
+		else:
+			size = 1
 
 		if not hasattr(self, '_probs'):
 			self._probs = np.array(self.counts, dtype='float64')
 			self._probs = self._probs / np.sum(self._probs)
 
 		if not hasattr(self, '_np_sample'):
-			print 'making new sampler'
+			num_to_load = max(self.num_to_load, 2*size)
 			self._np_sample = np.random.choice(
-				a=len(self._probs), size=self.num_to_load, p=self._probs
+				a=len(self._probs), size=num_to_load, p=self._probs
 			)
 
 		if not hasattr(self, '_ptr'):
@@ -97,17 +100,18 @@ class CounterSampler(object):
 		self._ptr += size
 
 		if self._ptr >= len(self._np_sample):
-			print 'making new sampler'
+			num_to_load = max(self.num_to_load, 2*size)
 			self._np_sample = np.random.choice(
-				a=len(self._probs), size=self.num_to_load, p=self._probs
+				a=len(self._probs), size=num_to_load, p=self._probs
 			)
 			self._ptr = 0
-			return self.sample((size,))
+			return self.sample(shape)
 
 		else:
-			return self._np_sample[self._ptr - size: self._ptr]
-
-
+			if shape is not None:
+				return self._np_sample[self._ptr - size: self._ptr].reshape(shape)
+			else:
+				return self._np_sample[self._ptr - size: self._ptr][0]
 
 
 	def save(self, filename):
@@ -135,98 +139,11 @@ class CounterSampler(object):
 		'''
 		return self.counts[idx]
 
+
 	def get_probability(self, token_id):
 		'''
 		Return the probability associated to token_id.
 		'''
 		# Delegate to the underlying Categorical sampler
-		return self.get_sampler().get_probability(token_id)
-
-
-
-#class MultinomialSampler(object):
-
-#	def __init__(self, scores):
-#		if len(scores) < 1:
-#			raise ValueError('The scores list must have length >= 1')
-#		self.scores = scores
-#		self.total = float(sum(scores))
-#		self.K = len(scores)
-#		self.setup()
-
-
-#	def get_probability(self, k):
-#		'''
-#		Get the actual probability associated to outcome k
-#		'''
-#		return self.orig_prob_mass[k]
-
-
-#	def setup(self):
-#		self.orig_prob_mass = np.zeros(self.K)
-#		self.mixture_prob_mass = np.zeros(self.K)
-#		self.mass_reasignments = np.zeros(self.K, dtype=np.int64)
-
-#		# Sort the data into the outcomes with probabilities
-#		# that are larger and smaller than 1/K.
-#		smaller = []
-#		larger  = []
-#		for k, score in enumerate(self.scores):
-#			self.orig_prob_mass[k] = score / self.total
-#			self.mixture_prob_mass[k] = (self.K*score) / self.total
-#			if self.mixture_prob_mass[k] < 1.0:
-#				smaller.append(k)
-#			else:
-#				larger.append(k)
-
-#		# We will have k different slots. Each slot represents 1/K
-#		# prbability mass, and to each we allocate all of the probability
-#		# mass from a "small" outcome, plus some probability mass from
-#		# a "large" outcome (enough to equal the total 1/K).
-#		# We keep track of the remaining mass left for the larger outcome,
-#		# allocating the remainder to another slot later.
-#		# The result is that the kth has some mass allocated to outcome
-#		# k, and some allocated to another outcome, recorded in J[k].
-#		# q[k] keeps track of how much mass belongs to outcome k, and
-#		# how much belongs to outcome J[k].
-#		while len(smaller) > 0 and len(larger) > 0:
-#			small_idx = smaller.pop()
-#			large_idx = larger.pop()
-
-#			self.mass_reasignments[small_idx] = large_idx
-#			self.mixture_prob_mass[large_idx] = (
-#				self.mixture_prob_mass[large_idx] -
-#				(1.0 - self.mixture_prob_mass[small_idx])
-#			)
-
-#			if self.mixture_prob_mass[large_idx] < 1.0:
-#				smaller.append(large_idx)
-#			else:
-#				larger.append(large_idx)
-
-#		return self.mass_reasignments, self.mixture_prob_mass
-
-
-#	def sample(self, shape=()):
-
-#		if len(shape) < 1:
-#			return self._sample()
-#		else:
-#			this_dim = shape[0]
-#			recurse_shape = shape[1:]
-#			return np.array(
-#				[self.sample(recurse_shape) for i in range(this_dim)]
-#			, dtype='int64')
-
-
-#	def _sample(self):
-
-#		# Draw from the overall uniform mixture.
-#		k = np.int64(int(np.floor(np.random.rand()*self.K)))
-
-#		# Draw from the binary mixture, either keeping the
-#		# small one, or choosing the associated larger one.
-#		if np.random.rand() < self.mixture_prob_mass[k]:
-#			return k
-#		else:
-#			return self.mass_reasignments[k]
+		self.ensure_prepared()
+		return self.probabilities[token_id]

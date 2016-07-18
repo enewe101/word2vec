@@ -13,6 +13,92 @@ import os
 import sys
 
 
+class TokenChooser(object):
+
+	'''
+	This choses which context token should be taken given a window
+	of +/- K around a query token
+	'''
+
+	def __init__(self, K, kernel):
+		if not len(kernel) == 2*K:
+			raise ValueError(
+				'`kernel` must have 2*K entries, one for '
+				'each of the elements within the windows of +/- K tokens.'
+			)
+
+		self.K = K
+		self.kernel = kernel
+		self.samplers = {}
+		self.indices = range(-K, 0) + range(1, K+1)
+
+
+	def choose_token(self, idx, length):
+		'''
+		Randomly choose a token according to the kernel supplied
+		in the constructor.  Note that when sampling the context near
+		the beginning of a sentence, the left part of the context window
+		will be truncated.  Similarly, sampling context near the end of
+		a sentence leads to truncation of the right part of the context
+		window.  Short sentences lead to truncation on both sides.
+
+		To ensure that samples are returned within the possibly truncated
+		window, two values define the actual extent of the context to be
+		sampled:
+
+		`idx`: index of the query word within the context.  E.g. if the
+			valid context is constrained to a sentence, and the query word
+			is the 3rd token in the sentence, idx should be 2 (because
+			of 0-based indexing)
+
+		`length`: length of the the context, E.g. If context is
+			constrained to a sentence, and sentence is 7 tokens long,
+			length should be 7.
+		'''
+
+		# If the token is near the edges of the context, then the
+		# sampling kernel will be truncated (we can't sample before the
+		# firs word in the sentence, or after the last word).
+		# Determine the slice indices that define the truncated kernel.
+		negative_idx = length - idx
+		start = max(0, self.K - idx)
+		stop = min(2*self.K, self.K + negative_idx - 1)
+
+		# We make a separate multinomial sampler for each different
+		# truncation of the kernel, because they each define a different
+		# set of sampling probabilityes.  If we don't have a sampler for
+		# this particular kernel shape, make one.
+		if not (start, stop) in self.samplers:
+
+			trunc_probabilities = self.kernel[start:stop]
+			self.samplers[start,stop] = (
+				Categorical(trunc_probabilities)
+			)
+
+		# Sample from the multinomial sampler for the context of this shape
+		outcome_idx = self.samplers[start,stop].sample()
+
+		# Map this into the +/- indexing relative to the query word
+		relative_idx = self.indices[outcome_idx + start]
+
+		# And then map this into absolute indexing
+		result_idx = relative_idx + idx
+
+		return result_idx
+
+
+MAX_NUMPY_SEED = 4294967295
+def reseed():
+	'''
+	Makes a hop in the random chain.
+
+	If called before spawning a child processes, it will ensure each child
+	generates random numbers independently.  Unlike seeding child randomness
+	from an os source of randomness, this is reproducible by starting the parent
+	with the same random seed.
+	'''
+	np.random.seed(np.random.randint(MAX_NUMPY_SEED))
+
 class DataSetReaderIllegalStateException(Exception):
 	'''
 	Used if DatasetReader's methods are called in an incorrect order, e.g.
@@ -141,75 +227,6 @@ class DatasetReader(object):
 					yield filename
 
 
-	def __iter__(self):
-		return self.stream_examples()
-
-
-	def stream_examples(self):
-		'''
-		Reads all dataset files and generates examples. Signal and noise
-		examples are consistently distributed in alternating chunks of
-		batch_size signal examples followed by batch_size noise_examples.
-		Padding with null examples is used at the end of the dataset.
-
-		(no Inputs)
-		Yields
-			* example [any]
-		'''
-
-		# TODO: currently the only randomness in minibatching comes from
-		# the signal context and noise contexts that are drawn for a
-		# given entity query tuple.  But the entity query tuples are read
-		# deterministically in order through the corpus  Ideally examples
-		# should be totally shuffled..
-
-		# This cannot be called before calling prepare(), unless a prepared
-		# UnigramDictionary was passed to the self's constructor
-		if not self.prepared:
-			raise DataSetReaderIllegalStateException(
-				"DatasetReader: generate_examples() cannot be called before "
-				"prepare() is called unless a prepared UnigramDictionary has "
-				"was passed into the DatasetReader's constructor."
-			)
-
-		# Open queues, which will help with multiprocessing the work
-		file_queue = IterableQueue()
-		signal_example_queue = IterableQueue()
-		noise_example_queue = IterableQueue()
-
-		# Fill the file queue with all dataset files that need to be processed
-		file_producer = file_queue.get_producer()
-		for filename in self.generate_filenames():
-			file_producer.put(filename)
-		file_producer.close()
-
-		# Read dataset files and generate examples using multiple processes
-		for i in range(self.num_processes):
-			# Give child processes independent (yet reproducible) randomness
-			reseed()
-			# Start a child on reading dataset files and generating examples
-			Process(target=self.generate_examples, args=(
-				file_queue.get_consumer(),
-				signal_example_queue.get_producer(),
-				noise_example_queue.get_producer()
-			)).start()
-
-		# Pull together and organize the examples generated
-		organized_stream = self.organize_examples(
-			signal_example_queue.get_consumer(),
-			noise_example_queue.get_consumer()
-		)
-
-		# Close all the queues
-		file_queue.close()
-		signal_example_queue.close()
-		noise_example_queue.close()
-
-		# Yield an organized stream of results
-		for example in organized_stream:
-			yield example
-
-
 	def produce_examples(self, filename_iterator):
 
 		sorted_examples = []
@@ -262,7 +279,7 @@ class DatasetReader(object):
 		if len(sorted_examples) > 0:
 			sorted_examples = np.array(sorted_examples, dtype='int32')
 		else:
-			sorted_examples = np.empty(shape=(0,2))
+			sorted_examples = np.empty(shape=(0,2), dtype='int32')
 		return sorted_examples
 
 
@@ -339,7 +356,6 @@ class DatasetReader(object):
 		# Put all the filenames on a producer queue
 		file_producer = file_queue.get_producer()
 		for filename in self.generate_filenames():
-			print 'placing on file queue', filename
 			file_producer.put(filename)
 		file_producer.close()
 
@@ -372,29 +388,6 @@ class DatasetReader(object):
 		# Concatenate the macrobatches, and return the dataset
 		self.examples = np.concatenate(macrobatches)
 		self.data_loaded = True
-		return self.examples
-
-
-	def generate_dataset(self):
-		'''
-		Reads all examples and stores them in self.examples.  Converts the
-		examples to an numpy int32 array.
-		(no Inputs)
-		(no Outpus)
-		Side Effects
-			* populates self.examples [np.array (int32)]
-		'''
-		# Start streaming examples (generated by child processes), capturing
-		# them in a big plain Python list
-		self.examples = []
-		for example in self.stream_examples():
-			self.examples.append(example)
-
-		# Cast the list to a numpy int32 array.  Keep a reference in self.
-		self.examples = np.array(self.examples, dtype='int32')
-		self.data_loaded = True
-
-		# Return the dataset
 		return self.examples
 
 
@@ -461,7 +454,6 @@ class DatasetReader(object):
 				'been generated.'
 			)
 		path = os.path.join(directory, 'data.npz')
-		print 'saving to', path
 		np.savez(path, data=self.examples)
 
 
@@ -475,7 +467,6 @@ class DatasetReader(object):
 		macrobatches = []
 		for fname in fnames:
 			if not self.MATCH_EXAMPLE_STORE.match(fname):
-				print 'skipping', fname
 				continue
 			f = np.load(os.path.join(examples_dir, fname))
 			macrobatches.append(f['data'].astype('int32'))
@@ -496,7 +487,6 @@ class DatasetReader(object):
 		'''
 		# Delegate to the underlying UnigramDictionary
 		self.unigram_dictionary.save(directory)
-
 
 
 	def preparation(self, savedir, min_frequency=None):
@@ -567,14 +557,7 @@ class DatasetReader(object):
 
 		chooser = TokenChooser(K=len(self.kernel)/2, kernel=self.kernel)
 
-		i = 0
-		j = 0
 		for tokens in parsed:
-
-			i += 1
-			if i % 500 == 0:
-				print i
-				print '\t', j
 
 			# Isolated tokens (e.g. one-word sentences) have no context
 			# and can't be used for training.
@@ -583,23 +566,11 @@ class DatasetReader(object):
 
 			token_ids = self.unigram_dictionary.get_ids(tokens)
 
-#			loop_start = time.time()
-#			start = loop_start
-			# We'll now generate generate signal examples and noise
-			# examples for training
 			for query_token_pos, query_token_id in enumerate(token_ids):
 
-
-
-				# TODO: handle this differently, as post processing after entire
-				# dataset created?
-				#
 				# Possibly discard the token
 				if self.do_discard(query_token_id):
 					continue
-
-#				discard_decision = time.time() - start
-#				start = time.time()
 
 				# Sample a token from the context
 				context_token_pos = chooser.choose_token(
@@ -607,41 +578,17 @@ class DatasetReader(object):
 				)
 				context_token_id = token_ids[context_token_pos]
 				signal_example = [query_token_id, context_token_id]
-				j += 1
 				yield (True, signal_example)
-
-#				context_sampling = time.time() - start
-#				start = time.time()
 
 				# Sample tokens from the noise
 				noise_context_ids = self.unigram_dictionary.sample(
 					(self.noise_ratio,))
 
-#				noise_sampling = time.time() - start
-#				start = time.time()
-
 				# block-assign the noise samples to the noise batch array
 				for noise_context_id in noise_context_ids:
 					noise_example = [query_token_id, noise_context_id]
-					j += 1
 					yield (False, noise_example)
 
-#				assign_noise = time.time() - start
-#				total = time.time()
-
-#				j += 1
-#				if j % 100 == 0:
-#					print
-#					print 'discard-decision', discard_decision / total
-#					print 'context-sampling', context_sampling / total
-#					print 'noise-sampling', noise_sampling / total
-#					print 'assign-noise:', assign_noise / total
-#					print
-#					print '-'*32
-
-
-				loop_start = time.time()
-				start = loop_start
 
 	def parsed(self, filename):
 		tokenized_sentences = []
@@ -650,95 +597,8 @@ class DatasetReader(object):
 		return tokenized_sentences
 
 
-	def generate_examples(self, file_queue, signal_example_queue, noise_example_queue):
-		'''
-		Draw file names from the iterable `file_queue`, parse the file into
-		units (examples) that will be fed into a batching process.
-
-		INPUTS
-		* file_queue [IterableQueue.ConsumerQueue]: A queue containing
-			absolute paths ([str]s) of dataset files.
-		* signal_example_queue [IterableQueue.ProducerQueue]: A queue that accepts
-			training examples ([any]).
-		* noise_example_queue [IterableQueue.ProducerQueue]: A queue that accepts
-			training examples ([any]).
-
-		(no OUTPUS)
-
-		CONSUMES
-		* filename [str]: Absolute path to a dataset file.
-
-		PRODUCES
-		* example [any]: A single training example
-		'''
-
-		for filename in file_queue:
-
-			# Parse the file, then generate a bunch of examples from it
-			parsed = self.parse(filename)
-			examples = self.build_examples(parsed)
-
-			# Put the examples onto a queue.  Keep signal and noise examples
-			# separate so that they can be combined in a consistent pattern
-			for is_signal, example in examples:
-				if is_signal:
-					signal_example_queue.put(example)
-				else:
-					noise_example_queue.put(example)
-
-		signal_example_queue.close()
-		noise_example_queue.close()
-
-
 	def make_null_example(self):
 		return [UNK, UNK]
-
-
-	def organize_examples(
-		self, signal_example_queue, noise_example_queue
-	):
-		'''
-		Combine signal and noise examples in fixed proportions.  Ensures that
-		each minibatch has a contiguous bunch of signal examples, followed by
-		a bunch of noise examples, in a consistent proportion.
-
-		INPUTS
-		* signal_example_queue [IterableQueue.ConsumerQueue]: A queue that yields
-			training examples ([any]).
-		* noise_example_queue [IterableQueue.ConsumerQueue]: A queue that yields
-			training examples ([any]).
-
-		(no OUTPUS)
-
-		CONSUMES
-		* [any]: Signal examples.
-		* [any]: Noise examples.
-
-		Side effect:
-		* populates self.examples [list (any)]
-		'''
-		# Draw examples off the signal and noise queue, and organize them into
-		# a stream of examples that consistently alternates between
-		# batch_size number of signal examples followed by
-		# batch_size * noise_ratio number of noise examples
-
-		examples_left = True
-		while examples_left:
-
-			# Put batch_size signal examples in a row (add padding if necessary)
-			for i in range(self.batch_size):
-				try:
-					yield signal_example_queue.next()
-				except StopIteration:
-					examples_left = False
-					yield self.make_null_example()
-
-			# Then put batch_size * noise_ratio noise examples. Pad if needed.
-			for i in range(self.batch_size * self.noise_ratio):
-				try:
-					yield noise_example_queue.next()
-				except StopIteration:
-					yield self.make_null_example()
 
 
 	def do_discard(self, token_id):
@@ -750,260 +610,4 @@ class DatasetReader(object):
 		discard_probability = 1 - np.sqrt(self.t/probability)
 		do_discard = np.random.uniform() < discard_probability
 
-		#if do_discard:
-		#	print 'discarding', self.unigram_dictionary.get_token(token_id)
-
 		return do_discard
-
-
-class TheanoMinibatcher(object):
-	'''
-	This generates a theano shared variable storing the full dataset
-	-- all training examples.  When the theano device setting is the
-	GPU, shared variables are stored on the GPU, so this has the
-	effect of loading the full dataset onto the GPU.
-
-	One of the return values is a (set of) symbolic theano variable(s)
-	corresponding to a single minibatch of the data.  This symbolic
-	variable can be used to set up the training function.  What will
-	happen during training is that this variable acts as a sliding
-	"window" on the full dataset, selecting each minibatch in turn,
-	even though the entire dataset is loaded into GPU memory.
-
-	The indexing that causes the symbolic minibatch to address different
-	parts of the dataset is itself a shared variable, and it can be
-	updated using an update tuple provided to the updates list of a
-	theanod function.  The necessary update tuple is also provided as
-	a return value, so that it can be incorporated into the training
-	function
-	'''
-
-	def __init__(self, batch_size=1000, dtype="float32", num_dims=2):
-		self.batch_size = batch_size
-		self.dtype = dtype
-		self.num_dims = num_dims
-
-		self._setup_batching()
-
-
-	def _initialize_data_container(self, num_dims, dtype):
-
-		# Validate num_dims
-		if(num_dims < 1 or not isinstance(num_dims, int)):
-			raise ValueError(
-				'TheanoMinibatcher: num_dims must be an integer equal to or '
-				'greater than 1.'
-			)
-
-		# Create the first dim, which houses the dataset
-		data_container = []
-		num_dims -= 1
-
-		# Repeatedly add a nested dimension, so that we have num_dims nestings
-		nested_container_handle = data_container
-		for dim_num in range(num_dims):
-			new_inner_container = []
-			nested_container_handle.append(new_inner_container)
-			nested_container_handle = new_inner_container
-
-		return np.array(data_container, dtype=dtype)
-
-	def reset(self):
-		'''
-		Reset the internal batch_num pointer to the start of the dataset
-		'''
-		self.batch_num.set_value(0)
-
-
-	def _setup_batching(self):
-
-		# Make an empty shared variable that will store the dataset
-		# Although empty, we can setup the relationship between the
-		# minibatch variable and the full dataset
-		self.dataset = shared(
-			self._initialize_data_container(self.num_dims, self.dtype)
-		)
-
-		# Make minibatch by indexing into the dataset
-		self.batch_num = shared(0)
-		batch_start = self.batch_num * self.batch_size
-		batch_end = batch_start + self.batch_size
-		self.batch = self.dataset[batch_start : batch_end,]
-
-		# Define an update that moves the batch window through the dataset
-		self.updates = [(self.batch_num, self.batch_num+1)]
-
-
-	def load_dataset(self, dataset):
-		# Load the dataset onto the gpu
-		self.dataset.set_value(dataset)
-		# Determine the total number of minibatches
-		self.num_batches = int(np.ceil(len(dataset) / float(self.batch_size)))
-		return self.num_batches
-
-
-	def get_batch(self):
-		return self.batch
-
-
-	def get_updates(self):
-		return self.updates
-
-
-	def get_num_batches(self):
-		return self.num_batches
-
-
-
-#class Word2VecMinibatcher(NoiseSymbolicMinibatcherMixin, Minibatcher):
-
-#	NOT_DONE = 0
-#	DONE = 1
-
-#	def __init__(
-#		self,
-#		files=[],
-#		directories=[],
-#		skip=[],
-#		unigram_dictionary=None,
-#		noise_ratio=15,
-#		kernel=[1,2,3,4,5,5,4,3,2,1],
-#		t = 1.0e-5,
-#		batch_size = 1000,
-#		verbose=True,
-#		num_processes=3
-#	):
-
-#		# Need to register noise ratio before call to super, because
-#		# super will call an overridden method that expects noise ratio
-#		# to be set
-#		self.noise_ratio = noise_ratio
-
-#		super(Word2VecMinibatcher, self).__init__(
-#			files,
-#			directories,
-#			skip,
-#			batch_size,
-#			num_processes,
-#			verbose
-#		)
-
-#		# Register parameters not already registered by
-#		# `super().__init__().`
-#		self.kernel = kernel
-#		self.t = t
-
-#		# Load the unigram_dictionary if any, or construct a new empty one.
-#		if unigram_dictionary is not None:
-#			self.unigram_dictionary = unigram_dictionary
-#		else:
-#			self.unigram_dictionary = UnigramDictionary()
-
-#		# Validate the kernel.  It should reflect the relative
-#		# frequencies of choosing tokens from a window of +/- K tokens
-#		# relative to a query token.  So it must have an even number of
-#		# entries
-#		if not len(self.kernel) % 2 == 0:
-#			raise ValueError(
-#				'kernel should reflect the relative frequencies of '
-#				'selecting a context token within +/- K of the query '
-#				'token, and so should have an equal number of entries '
-#				'defining frequencies to the left and right of the query '
-#				'token, and so should have an even number of entries.'
-#			)
-
-
-
-
-class TokenChooser(object):
-
-	'''
-	This choses which context token should be taken given a window
-	of +/- K around a query token
-	'''
-
-	def __init__(self, K, kernel):
-		if not len(kernel) == 2*K:
-			raise ValueError(
-				'`kernel` must have 2*K entries, one for '
-				'each of the elements within the windows of +/- K tokens.'
-			)
-
-		self.K = K
-		self.kernel = kernel
-		self.samplers = {}
-		self.indices = range(-K, 0) + range(1, K+1)
-
-
-	def choose_token(self, idx, length):
-		'''
-		Randomly choosea  token according to the kernel supplied
-		in the constructor.  Note that when sampling the context near
-		the beginning of a sentence, the left part of the context window
-		will be truncated.  Similarly, sampling context near the end of
-		a sentence leads to truncation of the right part of the context
-		window.  Short sentences lead to truncation on both sides.
-
-		To ensure that samples are returned within the possibly truncated
-		window, two values define the actual extent of the context to be
-		sampled:
-
-		`idx`: index of the query word within the context.  E.g. if the
-			valid context is constrained to a sentence, and the query word
-			is the 3rd token in the sentence, idx should be 2 (because
-			of 0-based indexing)
-
-		`length`: length of the the context, E.g. If context is
-			constrained to a sentence, and sentence is 7 tokens long,
-			length should be 7.
-		'''
-
-		# If the token is near the edges of the context, then the
-		# sampling kernel will be truncated (we can't sample before the
-		# firs word in the sentence, or after the last word).
-		# Determine the slice indices that define the truncated kernel.
-		negative_idx = length - idx
-		start = max(0, self.K - idx)
-		stop = min(2*self.K, self.K + negative_idx - 1)
-
-		# We make a separate multinomial sampler for each different
-		# truncation of the kernel, because they each define a different
-		# set of sampling probabilityes.  If we don't have a sampler for
-		# this particular kernel shape, make one.
-		if not (start, stop) in self.samplers:
-
-			trunc_probabilities = self.kernel[start:stop]
-			self.samplers[start,stop] = (
-				Categorical(trunc_probabilities)
-			)
-
-		# Sample from the multinomial sampler for the context of this shape
-		outcome_idx = self.samplers[start,stop].sample()
-
-		# Map this into the +/- indexing relative to the query word
-		relative_idx = self.indices[outcome_idx + start]
-
-		# And then map this into absolute indexing
-		result_idx = relative_idx + idx
-
-		return result_idx
-
-
-
-MAX_NUMPY_SEED = 4294967295
-def reseed():
-	'''
-	Makes a hop in the random chain.
-
-	If called before spawning a child processes, it will ensure each child
-	generates different random numbers.  Unlike seeding child randomness
-	from an os source of randomness, this will produce globally consistent
-	results when the parent starts with the same random seed.
-
-	In other words, child processes will all have different random chains
-	but the *particular* random chains they have is deterministic and
-	reproducible when the parent process randomness is seeded to the same
-	value.  So child processes have samples that are independent from one
-	another, but reproducible by controlling the seed of the parent process.
-	'''
-	np.random.seed(np.random.randint(MAX_NUMPY_SEED))

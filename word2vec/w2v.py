@@ -9,7 +9,8 @@ from lasagne.layers import (
 )
 from lasagne.init import Normal
 from lasagne.updates import nesterov_momentum
-from new_minibatcher import DatasetReader, TheanoMinibatcher
+from dataset_reader import DatasetReader
+from theano_minibatcher import TheanoMinibatcher
 
 
 def row_dot(matrixA, matrixB):
@@ -68,7 +69,6 @@ def word2vec(
 
 	# Prpare the minibatch generator
 	# (this produces the counter_sampler stats)
-	print 'Generating dictionary'
 	dataset_reader.prepare(savedir=savedir)
 
 	# Make a symbolic minibatcher
@@ -108,16 +108,8 @@ def word2vec(
 	# theano shared variables
 	train = function([], loss, updates=updates)
 
-	print 'Generating dataset'
-	dataset = dataset_reader.generate_dataset()
-	print dataset
-	print 'Loading dataset'
-	# TODO: freeze the dataset (generate should take a freeze_dir parameter)
+	dataset = dataset_reader.generate_dataset_parallel()
 	minibatcher.load_dataset(dataset)
-
-	#f = function([], embedder.get_output(), updates=minibatcher.get_updates())
-	#for batch_num in range(minibatcher.get_num_batches()):
-	#	print f()
 
 	# Iterate over the corpus, training the embeddings
 	for epoch in range(num_epochs):
@@ -167,7 +159,6 @@ class Word2VecEmbedder(object):
 		self.context_input = input_var[:,1]
 
 		# Make separate input layers for query and context words
-		#print 'using batch size:', batch_size
 		self.l_in_query = lasagne.layers.InputLayer(
 			shape=(batch_size,), input_var=self.query_input
 		)

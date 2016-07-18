@@ -1,7 +1,7 @@
 '''
 This module keeps track of the vocabulary present in a corpus, provides
 a two-way maping between tokens (strings) and token_ids (integers),
-keeps track of token frequencies, and can yield samples from the 
+keeps track of token frequencies, and can yield samples from the
 unigram distribution.
 '''
 
@@ -43,10 +43,10 @@ class UnigramDictionary(object):
 		for idx, token in enumerate(self.token_map.tokens):
 
 			# Copy over tokens that have at least min_frequency
-			# observations. Also copy over UNK no matter what it's 
+			# observations. Also copy over UNK no matter what it's
 			# frequency.
 			if (
-				self.counter_sampler.get_frequency(idx) >= min_frequency 
+				self.counter_sampler.get_frequency(idx) >= min_frequency
 				or idx == 0
 			):
 				tokens.append(token)
@@ -57,7 +57,7 @@ class UnigramDictionary(object):
 			else:
 				counts[UNK] += self.get_frequency(idx)
 
-		# Create a new TokenMap and CounterFrequency based on the 
+		# Create a new TokenMap and CounterFrequency based on the
 		# filtered tokens and their counts
 		self.token_map = TokenMap(on_unk=self.on_unk, tokens=tokens)
 		self.counter_sampler = CounterSampler(counts=counts)
@@ -66,7 +66,7 @@ class UnigramDictionary(object):
 	def add(self, token):
 		'''
 		Add a new token.  If this "token type" (which means this specific
-		spelling of a word) has not been seen before, add it to the 
+		spelling of a word) has not been seen before, add it to the
 		mapping.  Also increment the count for that token type.  Return
 		its ID under the token mapping.
 		'''
@@ -143,8 +143,8 @@ class UnigramDictionary(object):
 	def save(self, savedir):
 		'''
 		Save the UnigramDictionary to the directory specified.  This saves
-		the underlying TokenMap and CounterSampler in the directory 
-		given (savedir), using the default filenames "token-map.gz" and 
+		the underlying TokenMap and CounterSampler in the directory
+		given (savedir), using the default filenames "token-map.gz" and
 		"counter-sampler.gz".
 		'''
 
@@ -162,7 +162,7 @@ class UnigramDictionary(object):
 			os.mkdir(savedir)
 
 
-		# Save the TokenMap and CounterSampler by delegating to their 
+		# Save the TokenMap and CounterSampler by delegating to their
 		# save functions.
 		self.token_map.save(os.path.join(savedir, 'token-map.gz'))
 		self.counter_sampler.save(os.path.join(
@@ -172,7 +172,7 @@ class UnigramDictionary(object):
 
 	def load(self, loaddir):
 		'''
-		Load a UnigramDictionary from the specified directory, by 
+		Load a UnigramDictionary from the specified directory, by
 		loading the TokenMap and CounterSampler stored there.  This assumes
 		the filenames are 'token-map.gz' and 'counter-sampler.gz'.
 		'''
@@ -186,7 +186,7 @@ class UnigramDictionary(object):
 			os.path.join(loaddir, 'counter-sampler.gz'))
 
 
-	def sample(self, shape=()):
+	def sample(self, shape=None):
 		'''
 		Draw a sample according to the counter_sampler probability
 		'''
@@ -208,7 +208,3 @@ class UnigramDictionary(object):
 		'''
 		# Delegate to the underlying CounterSampler
 		return self.counter_sampler.get_frequency(token_id)
-
-	
-
-

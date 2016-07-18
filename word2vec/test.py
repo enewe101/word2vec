@@ -6,16 +6,15 @@ from unittest import main, TestCase
 from theano import tensor as T, function, shared
 import numpy as np
 from w2v import Word2VecEmbedder, word2vec
-from noise_contrast import get_noise_contrastive_loss
-from minibatcher import Word2VecMinibatcher, TokenChooser, default_parse
-from new_minibatcher import (
-	DatasetReader, DataSetReaderIllegalStateException, TheanoMinibatcher
-)
+from noise_contrast import get_noise_contrastive_loss, noise_contrast
+from dataset_reader import TokenChooser, DatasetReader, DataSetReaderIllegalStateException
+from theano_minibatcher import TheanoMinibatcher
 from counter_sampler import CounterSampler
 from lasagne.init import Normal
 from lasagne.updates import nesterov_momentum
 import re
 import os
+import shutil
 
 
 def sigma(a):
@@ -698,60 +697,6 @@ class TestCounterSampler(TestCase):
 		self.assertEqual(new_counter_sampler.counts, counts)
 
 
-class TestMultinomialSampler(TestCase):
-
-	def test_multinomial_sampler(self):
-		counts = range(1,6)
-		sampler = MultinomialSampler(counts)
-
-		# Test asking for a single sample (where no shape tuple supplied)
-		single_sample = sampler.sample()
-		self.assertTrue(type(single_sample) is np.int64)
-
-		# Test asking for an array of samples (by passing a shape tuple)
-		shape = (2,3,5)
-		array_sample = sampler.sample(shape)
-		self.assertTrue(type(array_sample) is np.ndarray)
-		self.assertTrue(array_sample.shape == shape)
-
-
-	def test_multinomial_sampler_stats(self):
-		'''
-		This tests that the sampler really does produce results whose
-		statistics match those requested by the counts vector
-		'''
-		# Seed numpy's random function to make the test reproducible
-		np.random.seed(1)
-
-		# Make a sampler with probabilities proportional to counts
-		counts = range(1,6)
-		sampler = MultinomialSampler(counts)
-
-		# Draw one hundred thousand samples, then total up the fraction of
-		# each outcome obseved
-		counter = Counter(sampler.sample((100000,)))
-		total = float(sum(counter.values()))
-		found_normalized = [
-			counter[i] / total for i in range(len(counts))
-		]
-
-		# Make an list of the expected fractions by which each outcome
-		# should be observed, in the limit of infinite sample
-		total_in_expected = float(sum(counts))
-		expected_normalized = [
-			c / total_in_expected for c in counts
-		]
-
-		# Check if each outcome was observed with a fraction that is within
-		# 0.005 of the expected fraction
-		close = [
-			abs(f - e) < 0.005
-			for f,e in zip(found_normalized, expected_normalized)
-		]
-		self.assertTrue(all(close))
-
-
-
 class TestTokenMap(TestCase):
 
 	TOKENS = ['apple', 'pear', 'banana', 'orange']
@@ -805,7 +750,6 @@ class TestTokenMap(TestCase):
 
 		with self.assertRaises(KeyError):
 			token_map.get_ids(['apple', 'no-exist'])
-
 
 
 	def test_token_map_plural_functions(self):
@@ -886,7 +830,6 @@ class TestNoiseContrast(TestCase):
 		expected_loss = -expected_objective / float(len(test_signal))
 
 		self.assertAlmostEqual(test_loss, expected_loss)
-
 
 
 class TestDataReader(TestCase):
@@ -1030,7 +973,7 @@ class TestDataReader(TestCase):
 		expected_noise_queries = Counter()
 		d = reader.unigram_dictionary
 		for filename in self.files:
-			for tokens in default_parse(filename):
+			for tokens in reader.parse(filename):
 				token_ids = d.get_ids(tokens)
 				for i, token_id in enumerate(token_ids):
 					low = max(0, i-5)
@@ -1090,7 +1033,7 @@ class TestDataReader(TestCase):
 		# unigram_dictionary, and that their frequency in the is correct.
 		tokens = []
 		for filename in self.files:
-			for add_tokens in default_parse(filename):
+			for add_tokens in reader.parse(filename):
 				tokens.extend(add_tokens)
 
 		counts = Counter(tokens)
@@ -1157,46 +1100,52 @@ class TestDataReader(TestCase):
 				seen_noise_sequences.add(sequence)
 
 
+	def test_save_load_data_serial(self):
+		self.save_load_data(True)
 
 
-	def test_save_load_data(self):
+	def test_save_load_data_parallel(self):
+		self.save_load_data(False)
+
+
+	def save_load_data(self, use_serial):
 		'''
 		Test that save and load actually write and read the Word2VecEmbedder's
 		parameters, by testing that a saved and then then loaded model yields
 		the same model as the original.
 		'''
 
-		# Remove any saved file that may be left over from a previous run
+		# Clear old testing data, and make sure dir for testing data exists
 		directory = 'test-data/test-dataset-reader'
-		path = os.path.join(directory, 'data.npz')
-		if os.path.exists(path):
-			os.remove(path)
+		if os.path.exists(directory):
+			shutil.rmtree(directory)
+		os.mkdir(directory)
 
+		# Make a dataset reader, and use two files as the dataset.  Use no
+		# token discarding.
 		reader = DatasetReader(
 			files=[
 				'test-data/test-corpus/numbers-med1.txt',
 				'test-data/test-corpus/numbers-med2.txt'
 			],
-			t=1, num_processes = 2
+			t=1, num_processes = 2,
+			verbose=False
 		)
 		reader.prepare()
 
-		start = time.time()
-		print 'generting dataset serially'
-		reader.generate_dataset_serial(directory)
-		#print 'generting dataset serially'
-		#reader.generate_dataset_parallel(directory)
-		elapsed = time.time() - start
+		# Generate the dataset, and pass in `directory` as the location to save
+		# the generated dataset
+		if use_serial:
+			reader.generate_dataset_serial(directory)
+		else:
+			reader.generate_dataset_parallel(directory)
 
+		# Reload the saved dataset from file
 		new_reader = DatasetReader()
 		new_reader.load_data(directory)
 
-		print elapsed
+		# Ensure the generated dataset, and the one relaoded from file are equal.
 		self.assertTrue(np.array_equal(new_reader.examples, reader.examples))
-
-		# Remove the saved file
-		#os.remove(path)
-
 
 
 class TestMinibatcher(TestCase):
@@ -1253,7 +1202,7 @@ class TestMinibatcher(TestCase):
 		expected_noise_queries = Counter()
 		d = reader.unigram_dictionary
 		for filename in self.files:
-			for tokens in default_parse(filename):
+			for tokens in reader.parse(filename):
 				token_ids = d.get_ids(tokens)
 				for i, token_id in enumerate(token_ids):
 					low = max(0, i-5)
@@ -1271,7 +1220,7 @@ class TestMinibatcher(TestCase):
 		symbolic_batch, updates = minibatcher.get_batch(), minibatcher.get_updates()
 
 		# Load the dataset
-		num_batches = minibatcher.load_dataset(reader.generate_dataset())
+		num_batches = minibatcher.load_dataset(reader.generate_dataset_parallel())
 
 		# Mock a theano training function.  The function simply returns the
 		# current minibatch, so we can check that the minibatches have the
@@ -1428,12 +1377,12 @@ class TestWord2VecOnCorpus(TestCase):
 
 		word2vec_embedder, dictionary = word2vec(
 			#files=['test-data/test-corpus/numbers-long.txt'],
-			files=['test-data/test-corpus/numbers-short.txt'],
+			files=['test-data/test-corpus/numbers-long.txt'],
 			num_epochs=1,
 			t=1,
 			batch_size = 10,
 			num_embedding_dimensions=5,
-			verbose=True,
+			verbose=False,
 		)
 
 
@@ -1468,8 +1417,6 @@ class TestWord2VecOnCorpus(TestCase):
 			)[:3]
 			top3_positions = [t[0] for t in top3]
 			self.assertItemsEqual(top3_positions, expected_tops[i-1])
-
-		print repr(word2vec_embedder.embed([1,2,3,4]))
 
 
 
@@ -1620,7 +1567,6 @@ class TestWord2Vec(TestCase):
 			C.set_value(np.random.normal(
 				0, 0.01, (vocab_size, num_embedding_dimensions)
 			).astype('float32'))
-			#print '\t***'
 			for epoch in range(num_epochs):
 
 				# Sample new noise examples every epoch
@@ -1636,14 +1582,11 @@ class TestWord2Vec(TestCase):
 				symbolic_batch.set_value(batch_data)
 
 				this_loss = train()
-				#if (epoch+1) % 500 == 0:
-				#	print this_loss
 
 			embedding_product = np.dot(W.get_value(), C.get_value().T)
 			embedding_products.append(usigma(embedding_product))
 
 		mean_embedding_products = np.mean(embedding_products, axis=0)
-		#print np.round(mean_embedding_products, 2)
 
 		# We expect that the embeddings will allocate the most probability
 		# to the contexts that were provided for words in the toy data.
@@ -1673,10 +1616,6 @@ class TestWord2Vec(TestCase):
 		self.assertTrue(all(
 			[x < 0.75 for x in embedding_maxima]
 		))
-		#print 'average weight to correct pairs:', np.mean(
-		#	embedding_maxima
-		#)
-		#print 'elapsed time:', time.time() - start
 
 
 	def test_Word2VecEmbedder(self):
