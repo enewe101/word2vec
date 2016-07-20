@@ -82,7 +82,7 @@ class TheanoMinibatcher(object):
 		)
 
 		# Make minibatch by indexing into the dataset
-		self.batch_num = shared(0)
+		self.batch_num = shared(np.int32(0))
 		batch_start = self.batch_num * self.batch_size
 		batch_end = batch_start + self.batch_size
 		self.batch = self.dataset[batch_start : batch_end,]

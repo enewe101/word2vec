@@ -144,32 +144,31 @@ class DatasetReader(object):
 		self.data_loaded = False
 
 
-	def check_access(self, savedir):
+	def check_access(self, save_dir):
 		'''
-		Test out writing in savedir.  The processes that generate the data
+		Test out writing in save_dir.  The processes that generate the data
 		to be saved can be really long-running, so we want to find out if there
 		is a simple IOError early!
 		'''
-		savedir = os.path.abspath(savedir)
-		path, dirname = os.path.split(savedir)
+		save_dir = os.path.abspath(save_dir)
+		path, dirname = os.path.split(save_dir)
 
 		# Make sure that the directory we want exists (make it if not)
 		if not os.path.isdir(path):
 			raise IOError('%s is not a directory or does not exist' % path)
-		if not os.path.exists(savedir):
-			os.mkdir(savedir)
-		elif os.path.isfile(savedir):
-			raise IOError('%s is a file. % savedir')
+		if not os.path.exists(save_dir):
+			os.mkdir(save_dir)
+		elif os.path.isfile(save_dir):
+			raise IOError('%s is a file. %' % save_dir)
 
 		# Make sure we can write to the file
 		f = open(os.path.join(
-			savedir, '.__test-minibatch-generator-access'
+			save_dir, '.__test-minibatch-generator-access'
 		), 'w')
 		f.write('test')
 		f.close
 		os.remove(os.path.join(
-			savedir, '.__test-minibatch-generator-access'
-		))
+			save_dir, '.__test-minibatch-generator-access' ))
 
 
 	def generate_filenames(self):
@@ -448,12 +447,18 @@ class DatasetReader(object):
 		'''
 		Save the generated dataset to the given directory.
 		'''
+
 		if not self.data_loaded:
 			raise DataSetReaderIllegalStateException(
 				'DatasetReader: cannot save the dataset before any data has '
 				'been generated.'
 			)
-		path = os.path.join(directory, 'data.npz')
+
+		save_dir = os.path.join(compiled_dataset_dir, 'examples')
+		if not os.path.exists(save_dir):
+			os.mkdir(save_dir)
+
+		path = os.path.join(save_dir, '0.npz')
 		np.savez(path, data=self.examples)
 
 
@@ -489,7 +494,7 @@ class DatasetReader(object):
 		self.unigram_dictionary.save(directory)
 
 
-	def preparation(self, savedir, min_frequency=None):
+	def preparation(self, save_dir, min_frequency=None):
 
 		# Read through the corpus, building the UnigramDictionary
 		for filename in self.generate_filenames():
@@ -501,15 +506,15 @@ class DatasetReader(object):
 			self.unigram_dictionary.prune(min_frequency)
 
 
-	def prepare(self, savedir=None, *args, **kwargs):
+	def prepare(self, save_dir=None, *args, **kwargs):
 		'''
 		Used to perform any preparation steps that are needed before
 		minibatching can be done.  E.g. assembling a dictionary that
 		maps tokens to integers, and determining the total vocabulary size
 		of the corpus.  It is assumed that files will need
 		to be saved as part of this process, and that they should be
-		saved under `savedir`, with `self.save()` managing the details
-		of writing files under `savedir`.
+		saved under `save_dir`, with `self.save()` managing the details
+		of writing files under `save_dir`.
 
 		INPUTS
 
@@ -517,9 +522,9 @@ class DatasetReader(object):
 		the call signature of this method is variable and is
 		determined by the call signature of the core
 		`self.preparation()` method.  Refer to that method's call
-		signature.  Minimally, this method accepts `savedir`
+		signature.  Minimally, this method accepts `save_dir`
 
-		* savedir [str]: path to directory in which preparation files
+		* save_dir [str]: path to directory in which preparation files
 			should be saved.
 
 		RETURNS
@@ -528,14 +533,14 @@ class DatasetReader(object):
 
 		# Before doing anything, if we were requested to save the
 		# dictionary, make sure we'll be able to do that (fail fast)
-		if savedir is not None:
-			self.check_access(savedir)
+		if save_dir is not None:
+			self.check_access(save_dir)
 
-		self.preparation(savedir, *args, **kwargs)
+		self.preparation(save_dir, *args, **kwargs)
 
 		# Save the dictionary, if requested to do so.
-		if savedir is not None:
-			self.save(savedir)
+		if save_dir is not None:
+			self.save_dictionary(save_dir)
 
 		self.prepared = True
 

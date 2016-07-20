@@ -26,7 +26,7 @@ def word2vec(
 		files=[],
 		directories=[],
 		skip=[],
-		savedir=None,
+		save_dir=None,
 		num_epochs=5,
 		unigram_dictionary=None,
 		noise_ratio=15,
@@ -69,7 +69,7 @@ def word2vec(
 
 	# Prpare the minibatch generator
 	# (this produces the counter_sampler stats)
-	dataset_reader.prepare(savedir=savedir)
+	dataset_reader.prepare(save_dir=save_dir)
 
 	# Make a symbolic minibatcher
 	# Note that the full batch includes noise_ratio number of noise examples#
@@ -122,9 +122,9 @@ def word2vec(
 		if verbose:
 			print '\tAverage loss: %f' % np.mean(losses)
 
-	# Save the model (the embeddings) if savedir was provided
-	if savedir is not None:
-		embedings_filename = os.path.join(savedir, 'embeddings.npz')
+	# Save the model (the embeddings) if save_dir was provided
+	if save_dir is not None:
+		embedings_filename = os.path.join(save_dir, 'embeddings.npz')
 		embedder.save(embeddings_filename)
 
 	# Return the trained embedder and the dictionary mapping tokens

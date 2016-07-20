@@ -882,8 +882,6 @@ class TestDataReader(TestCase):
 			reader.generate_dataset_serial()
 
 
-
-
 	def test_token_discarding(self):
 		'''
 		Make sure that token discarding is occurring as expected.  We build the
