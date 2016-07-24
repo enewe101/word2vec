@@ -91,13 +91,13 @@ MAX_NUMPY_SEED = 4294967295
 def reseed():
 	'''
 	Makes a hop in the random chain.
-
 	If called before spawning a child processes, it will ensure each child
 	generates random numbers independently.  Unlike seeding child randomness
-	from an os source of randomness, this is reproducible by starting the parent
-	with the same random seed.
+	from an os source of randomness, this is reproducible by starting the 
+	parent with the same random seed.
 	'''
 	np.random.seed(np.random.randint(MAX_NUMPY_SEED))
+
 
 class DataSetReaderIllegalStateException(Exception):
 	'''
@@ -147,8 +147,8 @@ class DatasetReader(object):
 	def check_access(self, save_dir):
 		'''
 		Test out writing in save_dir.  The processes that generate the data
-		to be saved can be really long-running, so we want to find out if there
-		is a simple IOError early!
+		to be saved can be really long-running, so we want to find out if 
+		there is a simple IOError early!
 		'''
 		save_dir = os.path.abspath(save_dir)
 		path, dirname = os.path.split(save_dir)
