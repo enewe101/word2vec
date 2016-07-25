@@ -8,7 +8,9 @@ import numpy as np
 from w2v import Word2VecEmbedder, word2vec
 from noise_contrast import get_noise_contrastive_loss, noise_contrast
 from dataset_reader import TokenChooser, DatasetReader, DataSetReaderIllegalStateException
-from theano_minibatcher import TheanoMinibatcher
+from theano_minibatcher import (
+	TheanoMinibatcher, NoiseContrastiveTheanoMinibatcher
+)
 from counter_sampler import CounterSampler
 from lasagne.init import Normal
 from lasagne.updates import nesterov_momentum
@@ -834,9 +836,7 @@ class TestNoiseContrast(TestCase):
 
 class TestDataReader(TestCase):
 
-	#TODO: add a test for saving and loading the dictionary and for freezing
-	# the dataset
-
+	#TODO: add a test for saving and loading the dictionary and for 
 	def setUp(self):
 
 		# Define some parameters to be used in construction
@@ -846,22 +846,23 @@ class TestDataReader(TestCase):
 			'test-data/test-corpus/004.tsv'
 		]
 		self.batch_size = 5
+		self.macrobatch_size = 5
 		self.noise_ratio = 15
 		self.num_example_generators = 3
 		self.t = 0.03
 
 		self.dataset_reader_with_discard = DatasetReader(
 			files=self.files,
-			batch_size = self.batch_size,
 			noise_ratio = self.noise_ratio,
 			t=self.t,
+			macrobatch_size=self.macrobatch_size,
 			num_processes=3,
 			verbose=False
 		)
 
 		self.dataset_reader_no_discard = DatasetReader(
 			files=self.files,
-			batch_size = self.batch_size,
+			macrobatch_size=self.macrobatch_size,
 			noise_ratio = self.noise_ratio,
 			t=1.0,
 			num_processes=3,
@@ -871,25 +872,29 @@ class TestDataReader(TestCase):
 
 	def test_illegal_state_exception(self):
 		'''
-		Calling generate_dataset_parallel() on a DatasetReader before calling prepare()
-		should raise a DataSetReaderIllegalStateException.
+		Calling generate_dataset_parallel() on a DatasetReader before 
+		calling prepare() should raise DataSetReaderIllegalStateException.
 		'''
+
 		reader = self.dataset_reader_with_discard
 		with self.assertRaises(DataSetReaderIllegalStateException):
-			reader.generate_dataset_parallel()
+			iterator = reader.generate_dataset_parallel()
+			iterator.next()
 
 		with self.assertRaises(DataSetReaderIllegalStateException):
-			reader.generate_dataset_serial()
+			iterator = reader.generate_dataset_serial()
+			iterator.next()
 
 
 	def test_token_discarding(self):
 		'''
-		Make sure that token discarding is occurring as expected.  We build the
-		test case around the token "the", because its the most common token,
-		and so is most reliably discarded.  We compare the number of signal
-		examples whose query word is "the" to the number of occurrences of
-		"the" in the test corpus, and check that this fraction is close to that
-		expected based on the prescribed probability of discarding.
+		Make sure that token discarding is occurring as expected.  We build
+		the test case around the token "the", because its the most common 
+		token, and so is most reliably discarded.  We compare the number of
+		signal examples whose query word is "the" to the number of 
+		occurrences of "the" in the test corpus, and check that this 
+		fraction is close to that expected based on the prescribed 
+		probability of discarding.
 		'''
 		# Ensure reproducibility in this stochastic test
 		np.random.seed(1)
@@ -904,44 +909,55 @@ class TestDataReader(TestCase):
 			the_matches = the_pattern.findall(text)
 			num_the_tokens += len(the_matches)
 
-		# Repeatedly generate the dataset, with discarding, and keep track of
-		# how many times "the" is included as a query word
+		# Repeatedly generate the dataset, with discarding, and keep track 
+		# of how many times "the" is included as a query word
 		num_replicates = 5
 		signal_query_frequencies = []
 		for i in range(num_replicates):
-			signal_query_freq, noise_query_freq = self.get_the_query_frequency()
+			signal_query_freq, noise_query_freq = (
+				self.get_the_query_frequency())
 			signal_query_frequencies.append(signal_query_freq)
-			# The ratio of noise and signal examples should not be affected by
-			# discarding.
-			self.assertEqual(signal_query_freq*self.noise_ratio, noise_query_freq)
+			# The ratio of noise and signal examples should not be affected
+			# by discarding.
+			self.assertEqual(
+				signal_query_freq*self.noise_ratio, noise_query_freq)
 
-		# Take the average frequency with which "the" arose accross replicates.
+		# Take the average frequency with which "the" arose accross 
+		# replicates.
 		signal_query_frequency = np.mean(signal_query_frequencies)
 
-		# We expect "the" to arise in signal queries less often than it actually
-		# arises in the text, based on the probability of discarding
+		# We expect "the" to arise in signal queries less often than it 
+		# actually arises in the text, based on the probability of 
+		# discarding
 		tolerance = 0.05
 		the_token = reader.unigram_dictionary.get_id('the')
-		the_frequency = reader.unigram_dictionary.get_probability(the_token)
+		the_frequency = reader.unigram_dictionary.get_probability(
+			the_token)
 		expected_keep_ratio = np.sqrt(self.t/the_frequency)
 		actual_keep_ratio = signal_query_frequency / float(num_the_tokens)
-		self.assertTrue(abs(actual_keep_ratio - expected_keep_ratio) < tolerance)
+		self.assertTrue(
+			abs(actual_keep_ratio - expected_keep_ratio) < tolerance
+		)
 
 
 	def get_the_query_frequency(self):
-		# Generate the dataset, and see how many times "the" appears as a query
-		# word.
+		# Generate the dataset, and see how many times "the" appears as a 
+		# query word.
 		reader = self.dataset_reader_with_discard
 		dataset = reader.generate_dataset_parallel()
 		seen_noise_queries = Counter()
 		num_the_signals = 0
 		num_the_noises = 0
 		the_token = reader.unigram_dictionary.get_id('the')
-		for signal_examples, noise_examples in self.iterate_dataset(dataset):
+		dataset_iterator = self.iterate_dataset(dataset)
+		for signal_examples, noise_examples in dataset_iterator:
 
-			# Count number of times "the" occurs as query in signal_examples
+			# Count number of times "the" occurs as query in 
+			# signal_examples
 			signal_queries = signal_examples[:,0]
-			num_the_signals += sum([t == the_token for t in signal_queries])
+			num_the_signals += sum([
+				t == the_token for t in signal_queries
+			])
 
 			# Count number of times "the" occurs as query in noise_examples
 			noise_queries = noise_examples[:,0]
@@ -963,8 +979,8 @@ class TestDataReader(TestCase):
 		reader.prepare()
 
 		# Iterate through the corpus, noting what tokens arise within
-		# one another's contexts.  Build a lookup table, indicating the set of
-		# "legal pairs" -- tokens that arose in one another's context.
+		# one another's contexts.  Build a lookup table, indicating the set
+		# of "legal pairs" -- tokens that arose in one another's context.
 		legal_pairs = defaultdict(set)
 		# We'll also keep track of the query words in the signal examples
 		# To make sure that noise examples are also made for them
@@ -977,7 +993,8 @@ class TestDataReader(TestCase):
 					low = max(0, i-5)
 					legal_context = token_ids[low:i] + token_ids[i+1:i+6]
 					legal_pairs[token_id].update(legal_context)
-					# Every time a token appears we expect noise_ratio noise examples for it
+					# Every time a token appears we expect noise_ratio 
+					# noise examples for it
 					expected_noise_queries[token_id] += self.noise_ratio
 
 		# finally, and the pair (UNK, UNK), which is used to pad data
@@ -986,9 +1003,11 @@ class TestDataReader(TestCase):
 		reader.prepare()
 		dataset = reader.generate_dataset_parallel()
 		seen_noise_queries = Counter()
-		for signal_examples, noise_examples in self.iterate_dataset(dataset):
+		dataset_iterator = self.iterate_dataset(dataset)
+		for signal_examples, noise_examples in dataset_iterator:
 
-			# Keep track of how many times each token appears as the query in a noise example
+			# Keep track of how many times each token appears as the query 
+			# in a noise example
 			noise_queries = noise_examples[:,0]
 			seen_noise_queries.update(noise_queries)
 
@@ -997,13 +1016,16 @@ class TestDataReader(TestCase):
 			for query, context in signal_examples:
 				self.assertTrue(context in legal_pairs[query])
 
-		# Ensure that we got the expected number of appearances of tokens in
-		# noise examples.  But since we don't care about the number of times that
-		# UNK appears (since it is used for padding), we remove it from observed
-		# counts first
+		# Ensure that we got the expected number of appearances of tokens 
+		# in noise examples.  But since we don't care about the number of 
+		# times that UNK appears (since it is used for padding), we remove 
+		# it from observed counts first
 		del seen_noise_queries[UNK]
-		for key in set(seen_noise_queries.keys() + expected_noise_queries.keys()):
-			self.assertEqual(seen_noise_queries[key], expected_noise_queries[key])
+		keys = set(
+			seen_noise_queries.keys() + expected_noise_queries.keys())
+		for key in keys:
+			self.assertEqual(
+				seen_noise_queries[key], expected_noise_queries[key])
 
 
 	def iterate_dataset(self, dataset):
@@ -1011,11 +1033,24 @@ class TestDataReader(TestCase):
 		Given a dataset, separate out successive signal and noise examples,
 		and iterate through them
 		'''
-		window_size = self.batch_size * ( 1 + self.noise_ratio )
-		for pointer in range(0, len(dataset), window_size):
-			signal_examples = dataset[pointer : pointer + self.batch_size]
-			noise_examples = dataset[pointer + self.batch_size : pointer + window_size]
-			yield signal_examples, noise_examples
+
+		batch_size = self.batch_size
+		noise_batch_size = self.batch_size * self.noise_ratio
+
+		for signal_macrobatch, noise_macrobatch in dataset:
+			num_batches = len(signal_macrobatch) / self.batch_size
+			for pointer in range(num_batches):
+
+				signal_start = pointer * batch_size
+				signal_examples = signal_macrobatch[
+					signal_start : signal_start + batch_size
+				]
+				noise_start = pointer * noise_batch_size
+				noise_examples = noise_macrobatch[
+					noise_start : noise_start + noise_batch_size
+				]
+
+				yield signal_examples, noise_examples
 
 
 	def test_prepare(self):
@@ -1067,11 +1102,12 @@ class TestDataReader(TestCase):
 		# contexts for each query word, and check they are unique
 		noise_sequences = defaultdict(list)
 		last_query = None
-		for signal_examples, noise_examples in self.iterate_dataset(dataset):
+		dataset_iterator = self.iterate_dataset(dataset)
+		for signal_examples, noise_examples in dataset_iterator:
 			for row in noise_examples:
 				query, context = row
-				# We don't care about noise generated for UNK queries: they will
-				# certainly repeat because UNK is used for padding
+				# We don't care about noise generated for UNK queries: they
+				# will certainly repeat because UNK is used for padding
 				if query == UNK:
 					continue
 				noise_sequences[query].append(context)
@@ -1082,68 +1118,73 @@ class TestDataReader(TestCase):
 		seen_noise_sequences = set()
 		for key in noise_sequences:
 
-			# The full sequence involves noise sequences for multiple instances
-			# of the query.  Divide it into chunks, where each is the noise
-			# sequence for an individual instance
+			# The full sequence involves noise sequences for multiple 
+			# instances of the query.  Divide it into chunks, where each is
+			# the noise sequence for an individual instance
 			full_sequence = noise_sequences[key]
 			instance_sequences = [
 				tuple(full_sequence[i:i+self.noise_ratio])
 				for i in xrange(0, len(full_sequence), self.noise_ratio)
 			]
 
-			# Check if any of these sequences happened already, and add it to
-			# the list of seen noise sequences
+			# Check if any of these sequences happened already, and add it 
+			# to the list of seen noise sequences
 			for sequence in instance_sequences:
 				self.assertFalse(sequence in seen_noise_sequences)
 				seen_noise_sequences.add(sequence)
 
 
-	def test_save_load_data_serial(self):
-		self.save_load_data(True)
-
-
-	def test_save_load_data_parallel(self):
-		self.save_load_data(False)
-
-
-	def save_load_data(self, use_serial):
-		'''
-		Test that save and load actually write and read the Word2VecEmbedder's
-		parameters, by testing that a saved and then then loaded model yields
-		the same model as the original.
-		'''
-
-		# Clear old testing data, and make sure dir for testing data exists
-		directory = 'test-data/test-dataset-reader'
-		if os.path.exists(directory):
-			shutil.rmtree(directory)
-		os.mkdir(directory)
-
-		# Make a dataset reader, and use two files as the dataset.  Use no
-		# token discarding.
-		reader = DatasetReader(
-			files=[
-				'test-data/test-corpus/numbers-med1.txt',
-				'test-data/test-corpus/numbers-med2.txt'
-			],
-			t=1, num_processes = 2,
-			verbose=False
-		)
-		reader.prepare()
-
-		# Generate the dataset, and pass in `directory` as the location to save
-		# the generated dataset
-		if use_serial:
-			reader.generate_dataset_serial(directory)
-		else:
-			reader.generate_dataset_parallel(directory)
-
-		# Reload the saved dataset from file
-		new_reader = DatasetReader()
-		new_reader.load_data(directory)
-
-		# Ensure the generated dataset, and the one relaoded from file are equal.
-		self.assertTrue(np.array_equal(new_reader.examples, reader.examples))
+#	TODO: saving and loading has been disabled -- it doesn't seem to 
+# 	make sense under generator-based dataset iteration
+#
+#	def test_save_load_data_serial(self):
+#		self.save_load_data(True)
+#
+#
+#	def test_save_load_data_parallel(self):
+#		self.save_load_data(False)
+#
+#
+#	def save_load_data(self, use_serial):
+#		'''
+#		Test that save and load actually write and read the 
+#		Word2VecEmbedder's parameters, by testing that a saved and then 
+#		then loaded model yields the same model as the original.
+#		'''
+#
+#		# Clear old testing data, and make sure dir for testing data exists
+#		directory = 'test-data/test-dataset-reader'
+#		if os.path.exists(directory):
+#			shutil.rmtree(directory)
+#		os.mkdir(directory)
+#
+#		# Make a dataset reader, and use two files as the dataset.  Use no
+#		# token discarding.
+#		reader = DatasetReader(
+#			files=[
+#				'test-data/test-corpus/numbers-med1.txt',
+#				'test-data/test-corpus/numbers-med2.txt'
+#			],
+#			t=1, num_processes = 2,
+#			verbose=False
+#		)
+#		reader.prepare()
+#
+#		# Generate the dataset, and pass in `directory` as the location to 
+#		# save the generated dataset
+#		if use_serial:
+#			reader.generate_dataset_serial(directory)
+#		else:
+#			reader.generate_dataset_parallel(directory)
+#
+#		# Reload the saved dataset from file
+#		new_reader = DatasetReader()
+#		new_reader.load_data(directory)
+#
+#		# Ensure the generated dataset, and the one relaoded from file 
+#		# are equal.
+#		self.assertTrue(
+#			np.array_equal(new_reader.examples, reader.examples))
 
 
 class TestMinibatcher(TestCase):
@@ -1157,27 +1198,29 @@ class TestMinibatcher(TestCase):
 			'test-data/test-corpus/004.tsv'
 		]
 		self.batch_size = 5
+		self.macrobatch_size = 20
 		self.noise_ratio = 15
 		self.num_example_generators = 3
 		self.t = 0.03
 
 		self.dataset_reader_with_discard = DatasetReader(
 			files=self.files,
-			batch_size = self.batch_size,
 			noise_ratio = self.noise_ratio,
 			t=self.t,
 			num_processes=3,
+			macrobatch_size=self.macrobatch_size,
 			verbose=False
 		)
 
 		self.dataset_reader_no_discard = DatasetReader(
 			files=self.files,
-			batch_size = self.batch_size,
 			noise_ratio = self.noise_ratio,
 			t=1.0,
 			num_processes=3,
+			macrobatch_size=self.macrobatch_size,
 			verbose=False
 		)
+
 
 	def test_dataset_composition(self):
 		'''
@@ -1192,8 +1235,8 @@ class TestMinibatcher(TestCase):
 		reader.prepare()
 
 		# Iterate through the corpus, noting what tokens arise within
-		# one another's contexts.  Build a lookup table, indicating the set of
-		# "legal pairs" -- tokens that arose in one another's context.
+		# one another's contexts.  Build a lookup table, indicating the set
+		# of "legal pairs" -- tokens that arose in one another's context.
 		legal_pairs = defaultdict(set)
 		# We'll also keep track of the query words in the signal examples
 		# To make sure that noise examples are also made for them
@@ -1206,50 +1249,71 @@ class TestMinibatcher(TestCase):
 					low = max(0, i-5)
 					legal_context = token_ids[low:i] + token_ids[i+1:i+6]
 					legal_pairs[token_id].update(legal_context)
-					# Every time a token appears we expect noise_ratio noise examples for it
+					# Every time a token appears we expect noise_ratio 
+					# noise examples for it
 					expected_noise_queries[token_id] += self.noise_ratio
 
 		# finally, and the pair (UNK, UNK), which is used to pad data
 		legal_pairs[UNK] = set([UNK])
 
 		# Make a minibatcher
-		batch_size = self.batch_size * (self.noise_ratio + 1)
- 		minibatcher = TheanoMinibatcher(batch_size, dtype='int32', num_dims=2)
-		symbolic_batch, updates = minibatcher.get_batch(), minibatcher.get_updates()
+ 		minibatcher = NoiseContrastiveTheanoMinibatcher(
+			batch_size=self.batch_size, 
+			noise_ratio=self.noise_ratio, 
+			dtype='int32',
+			num_dims=2
+		)
+		symbolic_batch = minibatcher.get_batch()
+		updates = minibatcher.get_updates()
 
-		# Load the dataset
-		num_batches = minibatcher.load_dataset(reader.generate_dataset_parallel())
+
 
 		# Mock a theano training function.  The function simply returns the
 		# current minibatch, so we can check that the minibatches have the
 		# expected composition
 		f = function([], symbolic_batch, updates=updates)
 
-		# Iterate through the minibatches, to check that they have expected composition
 		seen_noise_queries = Counter()
-		for i in range(num_batches):
+		for macrobatch in reader.generate_dataset_parallel():
+			signal_macrobatch, noise_macrobatch = macrobatch
 
-			# Get the batch, and split it into the noise and signal parts
-			batch = f()
-			signal_examples = batch[0:self.batch_size, ]
-			noise_examples = batch[self.batch_size:self.batch_size*(self.noise_ratio+1), ]
+			# Load the dataset
+			num_batches = minibatcher.load_dataset(
+				signal_macrobatch, noise_macrobatch
+			)
 
-			# Keep track of how many times each token appears as the query in a noise example
-			noise_queries = noise_examples[:,0]
-			seen_noise_queries.update(noise_queries)
+			# Iterate through the minibatches, to check that they have 
+			# expected composition
+			for i in range(num_batches):
 
-			# Ensure that all of the signal examples are actually valid
-			# samples from the corpus
-			for query, context in signal_examples:
-				self.assertTrue(context in legal_pairs[query])
+				# Get the batch, and split it into the noise and signal 
+				# parts
+				batch = f()
+				signal_examples = batch[0:self.batch_size, ]
+				noise_examples = batch[
+					self.batch_size:self.batch_size*(self.noise_ratio+1), ]
 
-		# Ensure that we got the expected number of appearances of tokens in
-		# noise examples.  But since we don't care about the number of times that
-		# UNK appears (since it is used for padding), we remove it from observed
-		# counts first
+				# Keep track of how many times each token appears as the 
+				# query in a noise example
+				noise_queries = noise_examples[:,0]
+				seen_noise_queries.update(noise_queries)
+
+				# Ensure that all of the signal examples are actually valid
+				# samples from the corpus
+				for query, context in signal_examples:
+					self.assertTrue(context in legal_pairs[query])
+
+		# Ensure that we got the expected number of appearances of tokens 
+		# in noise examples.  But since we don't care about the number of 
+		# times that UNK appears (since it is used for padding), we remove 
+		# it from observed counts first
 		del seen_noise_queries[UNK]
-		for key in set(seen_noise_queries.keys() + expected_noise_queries.keys()):
-			self.assertEqual(seen_noise_queries[key], expected_noise_queries[key])
+		keys = set(
+			seen_noise_queries.keys() + expected_noise_queries.keys()
+		)
+		for key in keys:
+			self.assertEqual(
+				seen_noise_queries[key], expected_noise_queries[key])
 
 
 	def test_symbolic_minibatches(self):
@@ -1373,16 +1437,15 @@ class TestWord2VecOnCorpus(TestCase):
 		# Seed randomness to make the test reproducible
 		np.random.seed(1)
 
-		word2vec_embedder, dictionary = word2vec(
-			#files=['test-data/test-corpus/numbers-long.txt'],
+		word2vec_embedder, reader = word2vec(
 			files=['test-data/test-corpus/numbers-long.txt'],
-			num_epochs=1,
+			num_epochs=2,
+			batch_size=int(1e2),
+			macrobatch_size=int(1e5),
 			t=1,
-			batch_size = 10,
 			num_embedding_dimensions=5,
-			verbose=False,
+			verbose=False
 		)
-
 
 		W, C = word2vec_embedder.get_param_values()
 		dots = usigma(np.dot(W,C.T))
@@ -1458,14 +1521,15 @@ class TestWord2Vec(TestCase):
 
 	def test_save_load_dictionary(self):
 		'''
-		Test that save and load actually write and read the Word2VecEmbedder's
-		parameters, by testing that a saved and then then loaded model yields
-		the same model as the original.
+		Test that save and load actually write and read the 
+		Word2VecEmbedder's parameters, by testing that a saved and then 
+		then loaded model yields the same model as the original.
 		'''
 
 		# Remove any saved file that may be left over from a previous run
-		if os.path.exists('test-data/test-Word2VecEmbedder.npz'):
-			os.remove('test-data/test-Word2VecEmbedder.npz')
+		save_dir = 'test-data/test-w2v-embedder'
+		if os.path.exists(save_dir):
+			shutil.rmtree(save_dir)
 
 		# Make a Word2VecEmbedder with pre-specified query and context
 		# embeddings
@@ -1478,7 +1542,7 @@ class TestWord2Vec(TestCase):
 			word_embedding_init=self.QUERY_EMBEDDING,
 			context_embedding_init=self.CONTEXT_EMBEDDING
 		)
-		embedder.save('test-data/test-Word2VecEmbedder.npz')
+		embedder.save(save_dir)
 
 		# Create a new embedder, and attempt to load from file
 		embedder = Word2VecEmbedder(
@@ -1487,7 +1551,7 @@ class TestWord2Vec(TestCase):
 			vocabulary_size=self.VOCAB_SIZE,
 			num_embedding_dimensions=self.NUM_EMBEDDING_DIMENSIONS,
 		)
-		embedder.load('test-data/test-Word2VecEmbedder.npz')
+		embedder.load(save_dir)
 
 		W, C = embedder.get_params()
 
@@ -1495,19 +1559,19 @@ class TestWord2Vec(TestCase):
 		self.assertTrue(np.allclose(self.CONTEXT_EMBEDDING, C.get_value()))
 
 		# Remove the saved file
-		os.remove('test-data/test-Word2VecEmbedder.npz')
+		shutil.rmtree(save_dir)
 
 
 
 	def test_noise_contrastive_learning(self):
 		'''
 		Given a simple synthetic dataset, test that the Word2vecEmbedder,
-		coupled with a loss function from get_noise_contrastive_loss, produces
-		a trainable system that learns the theoretically ideal embeddings as
-		expected from [1].
+		coupled with a loss function from get_noise_contrastive_loss, 
+		produces a trainable system that learns the theoretically ideal 
+		embeddings as expected from [1].  
 
-		[1] "Noise-contrastive estimation of unnormalized statistical models,
-			with applications to natural image statistics"
+		[1] "Noise-contrastive estimation of unnormalized statistical 
+			models, with applications to natural image statistics"
 			by Michael U Gutmann, and Aapo Hyvarinen
 		'''
 
@@ -1520,7 +1584,8 @@ class TestWord2Vec(TestCase):
 		# respectively from the query and context embedding matrices should
 		# give higher values than any other row-column dot products.
 		signal_examples = [
-			[0,2], [1,3], [2,0], [3,1], [4,6], [5,7], [6,4], [7,5], [8,9], [9,8]
+			[0,2], [1,3], [2,0], [3,1], [4,6], [5,7], [6,4], [7,5], [8,9], 
+			[9,8]
 		]
 
 		# Predifine the size of batches and the embedding

@@ -10,7 +10,9 @@ from lasagne.layers import (
 from lasagne.init import Normal
 from lasagne.updates import nesterov_momentum
 from dataset_reader import DatasetReader
-from theano_minibatcher import TheanoMinibatcher
+from theano_minibatcher import (
+	TheanoMinibatcher, NoiseContrastiveTheanoMinibatcher
+)
 
 
 def row_dot(matrixA, matrixB):
@@ -38,8 +40,12 @@ def word2vec(
 		context_embedding_init=Normal(),
 		learning_rate=0.1,
 		momentum=0.9,
-		verbose=True,
-		num_processes=3
+		num_processes=3,
+		load_dictionary_dir=None,
+		min_frequency=10,
+		macrobatch_size = 100000,
+		max_queue_size=0,
+		verbose=True
 	):
 
 	'''
@@ -54,46 +60,58 @@ def word2vec(
 	'''
 
 	# Make a Word2VecMinibatcher, pass through parameters sent by caller
-	dataset_reader = DatasetReader(
+	reader = DatasetReader(
 		files=files,
 		directories=directories,
 		skip=skip,
-		batch_size=batch_size, # number of *signal_examples* per batch
 		noise_ratio=noise_ratio,
 		t=t,
 		num_processes=num_processes,
 		unigram_dictionary=unigram_dictionary,
 		kernel=kernel,
+		max_queue_size=max_queue_size,
+		macrobatch_size=macrobatch_size,
 		verbose=verbose
 	)
 
-	# Prpare the minibatch generator
+
+	# Prepare the minibatch generator
 	# (this produces the counter_sampler stats)
-	dataset_reader.prepare(save_dir=save_dir)
+	if load_dictionary_dir is None and unigram_dictionary is None:
+		if verbose:
+			print 'preparing dictionaries...'
+		reader.prepare(save_dir=save_dir)
+
+	# If min_frequency was specified, prune the dictionaries
+	if min_frequency is not None:
+		if verbose:
+			print 'prunning dictionaries...'
+		reader.prune(min_frequency)
 
 	# Make a symbolic minibatcher
-	# Note that the full batch includes noise_ratio number of noise examples#
-	# for every signal example, and the parameter "batch_size" here is interpreted
-	# as just the number of signal examples per batch; the full batch size is:
-	full_batch_size = batch_size * (1 + noise_ratio)
-	minibatcher = TheanoMinibatcher(
-		batch_size = full_batch_size,
+	minibatcher = NoiseContrastiveTheanoMinibatcher(
+		batch_size=batch_size,
+		noise_ratio=noise_ratio,
 		dtype="int32",
 		num_dims=2
 	)
 
-	# Make a Word2VecEmbedder object, feed it the combined input
+	# Make a Word2VecEmbedder object, feed it the combined input.
+	# Note that the full batch includes noise examples and signal_examples
+	# so is larger than batch_size, which is the number of signal_examples
+	# only per batch.
+	full_batch_size = batch_size * (1 + noise_ratio)
 	embedder = Word2VecEmbedder(
 		input_var=minibatcher.get_batch(),
 		batch_size=full_batch_size,
-		vocabulary_size=dataset_reader.get_vocab_size(),
+		vocabulary_size=reader.get_vocab_size(),
 		num_embedding_dimensions=num_embedding_dimensions,
 		word_embedding_init=word_embedding_init,
 		context_embedding_init=context_embedding_init
 	)
 
-	# Architectue is ready.  Make the loss function, and use it to create the
-	# parameter updates responsible for learning
+	# Architectue is ready.  Make the loss function, and use it to create 
+	# the parameter updates responsible for learning
 	loss = get_noise_contrastive_loss(embedder.get_output(), batch_size)
 	updates = nesterov_momentum(
 		loss, embedder.get_params(), learning_rate, momentum
@@ -108,28 +126,36 @@ def word2vec(
 	# theano shared variables
 	train = function([], loss, updates=updates)
 
-	dataset = dataset_reader.generate_dataset_parallel()
-	minibatcher.load_dataset(dataset)
-
-	# Iterate over the corpus, training the embeddings
+	# Iterate through the dataset, training the embeddings
 	for epoch in range(num_epochs):
+
 		if verbose:
 			print 'starting epoch %d' % epoch
-		losses = []
-		minibatcher.reset()
-		for batch_num in range(minibatcher.get_num_batches()):
-			losses.append(train())
-		if verbose:
-			print '\tAverage loss: %f' % np.mean(losses)
+
+		macrobatches = reader.generate_dataset_serial()
+		macrobatch_num = 0
+		for signal_macrobatch, noise_macrobatch in macrobatches:
+
+			macrobatch_num += 1
+			if verbose:
+				print 'running macrobatch %d' % (macrobatch_num - 1)
+
+			minibatcher.load_dataset(signal_macrobatch, noise_macrobatch)
+			losses = []
+			for batch_num in range(minibatcher.get_num_batches()):
+				if verbose:
+					print 'running minibatch', batch_num
+				losses.append(train())
+			if verbose:
+				print '\taverage loss: %f' % np.mean(losses)
 
 	# Save the model (the embeddings) if save_dir was provided
 	if save_dir is not None:
-		embedings_filename = os.path.join(save_dir, 'embeddings.npz')
-		embedder.save(embeddings_filename)
+		embedder.save(save_dir)
 
 	# Return the trained embedder and the dictionary mapping tokens
 	# to ids
-	return embedder, dataset_reader.unigram_dictionary
+	return embedder, reader
 
 
 
@@ -223,7 +249,6 @@ class Word2VecEmbedder(object):
 		return self._embed(token_ids)
 
 
-
 	def _compile_embed(self):
 		'''
 		Compiles the embedding function.  This is a separate theano
@@ -278,14 +303,39 @@ class Word2VecEmbedder(object):
 		return self.output
 
 
-	def save(self, filename):
+	def save(self, directory):
+		'''
+		Saves the model parameters (embeddings) to disk, in a file called
+		"embeddings.npz" under the directory given.
+		'''
+
+		# We are willing to create the directory given if it doesn't exist
+		if not os.path.exists(directory):
+			os.mkdir(directory)
+
+		# Save under the directory given in a file called "embeddings.npz'
+		save_path = os.path.join(directory, "embeddings.npz")
+
+		# Get the parameters and save them to disk
 		W, C = self.get_param_values()
-		np.savez(filename, W=W, C=C)
+		np.savez(save_path, W=W, C=C)
 
 
-	def load(self, filename):
-		npfile = np.load(filename)
-		W_loaded, C_loaded = npfile['W'].astype('float32'), npfile['C'].astype('float32')
+	def load(self, directory):
+		'''
+		Loads the model parameter values (embeddings) stored in the
+		directory given.  Expects to find the parameters in a file called
+		"embeddings.npz" within the directory given.
+		'''
+
+		# By default, we save to a file called "embeddings.npz" within the
+		# directory given to the save function.
+		save_path = os.path.join(directory, "embeddings.npz")
+
+		# Load the parameters
+		npfile = np.load(save_path)
+		W_loaded = npfile['W'].astype('float32')
+		C_loaded = npfile['C'].astype('float32')
 
 		# Get the theano shared variables that are used to hold the
 		# parameters, and fill them with the values just loaded
