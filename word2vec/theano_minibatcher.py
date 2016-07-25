@@ -69,7 +69,7 @@ class TheanoMinibatcher(object):
 		'''
 		Reset the internal batch_num pointer to the start of the dataset
 		'''
-		self.batch_num.set_value(0)
+		self.batch_num.set_value(np.int32(0))
 
 
 	def _setup_batching(self):
