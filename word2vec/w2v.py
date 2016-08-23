@@ -1,18 +1,26 @@
 from noise_contrast import get_noise_contrastive_loss
 import os
 import numpy as np
-from theano import tensor as T, function, shared
-import lasagne
-from lasagne.layers import (
-	get_output, InputLayer, EmbeddingLayer, get_all_params,
-	get_all_param_values
-)
-from lasagne.init import Normal
-from lasagne.updates import nesterov_momentum
 from dataset_reader import DatasetReader, default_parse
 from theano_minibatcher import (
 	TheanoMinibatcher, NoiseContrastiveTheanoMinibatcher
 )
+
+import os
+# Only import theano and lasagne if environment permits it
+exclude_theano_set = 'EXCLUDE_THEANO' in os.environ
+if exclude_theano_set and int(os.environ['EXCLUDE_THEANO']) == 1:
+	# Don't import theano and lasagne
+	pass
+else:
+	from theano import tensor as T, function, shared
+	import lasagne
+	from lasagne.layers import (
+		get_output, InputLayer, EmbeddingLayer, get_all_params,
+		get_all_param_values
+	)
+	from lasagne.init import Normal
+	from lasagne.updates import nesterov_momentum
 
 
 def row_dot(matrixA, matrixB):
@@ -53,8 +61,8 @@ def word2vec(
 
 		# Embedding options
 		num_embedding_dimensions=500,
-		word_embedding_init=Normal(),
-		context_embedding_init=Normal(),
+		word_embedding_init=None,
+		context_embedding_init=None,
 
 		# Learning rate options
 		learning_rate=0.1,
@@ -187,9 +195,15 @@ class Word2VecEmbedder(object):
 		batch_size,
 		vocabulary_size=100000,
 		num_embedding_dimensions=500,
-		word_embedding_init=Normal(),
-		context_embedding_init=Normal(),
+		word_embedding_init=None,
+		context_embedding_init=None,
 	):
+
+		if word_embedding_init is None:
+			word_embedding_init = Normal()
+
+		if context_embedding_init is None:
+			context_embedding_init = Normal()
 
 		self.input_var = input_var
 		self.batch_size = batch_size

@@ -4,7 +4,6 @@ import time
 from iterable_queue import IterableQueue
 from multiprocessing import Process
 from subprocess import check_output
-#from categorical import Categorical
 from counter_sampler import CounterSampler
 from token_map import UNK
 from unigram_dictionary import UnigramDictionary
@@ -587,6 +586,7 @@ class DatasetReader(object):
 		# Read through the corpus, building the UnigramDictionary
 		for filename in self.generate_filenames():
 			for tokens in self.parse(filename):
+				print tokens
 				self.unigram_dictionary.update(tokens)
 
 		# Prune the dictionary, if requested to do so.

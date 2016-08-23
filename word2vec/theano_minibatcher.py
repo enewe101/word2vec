@@ -1,16 +1,23 @@
+import sys
 import re
 import gc
 import time
 from iterable_queue import IterableQueue
 from multiprocessing import Process
 from subprocess import check_output
-from categorical import Categorical
 from token_map import UNK
 from unigram_dictionary import UnigramDictionary
 import numpy as np
-from theano import shared, function, tensor as T
+
 import os
-import sys
+# Only import theano and lasagne if environment permits it
+exclude_theano_set = 'EXCLUDE_THEANO' in os.environ
+if exclude_theano_set and int(os.environ['EXCLUDE_THEANO']) == 1:
+	# Don't import theano and lasagne
+	pass
+else:
+	# Do import theano and lasagne
+	from theano import shared, function, tensor as T
 
 
 class TheanoMinibatcher(object):

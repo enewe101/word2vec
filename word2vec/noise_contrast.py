@@ -1,6 +1,15 @@
-import theano.tensor as T
-from theano import function
-import lasagne
+import os
+
+# Only import theano and lasagne if environment permits it
+exclude_theano_set = 'EXCLUDE_THEANO' in os.environ
+if exclude_theano_set and int(os.environ['EXCLUDE_THEANO']) == 1:
+	# Don't import theano and lasagne
+	pass
+else:
+	# Do import theano and lasagne
+	import theano.tensor as T
+	from theano import function
+	import lasagne
 
 
 def noise_contrast(signal, noise, scale=True):
