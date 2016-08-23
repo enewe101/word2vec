@@ -10,7 +10,6 @@ it just means memory would be wasted)
 
 import numpy as np
 import gzip
-from categorical import Categorical
 
 
 class CounterSamplerException(Exception):
@@ -144,6 +143,5 @@ class CounterSampler(object):
 		'''
 		Return the probability associated to token_id.
 		'''
-		# Delegate to the underlying Categorical sampler
 		self.ensure_prepared()
 		return self.probabilities[token_id]

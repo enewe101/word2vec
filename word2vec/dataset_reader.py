@@ -4,11 +4,11 @@ import time
 from iterable_queue import IterableQueue
 from multiprocessing import Process
 from subprocess import check_output
-from categorical import Categorical
+#from categorical import Categorical
+from counter_sampler import CounterSampler
 from token_map import UNK
 from unigram_dictionary import UnigramDictionary
 import numpy as np
-from theano import shared
 import os
 import sys
 
@@ -72,7 +72,7 @@ class TokenChooser(object):
 
 			trunc_probabilities = self.kernel[start:stop]
 			self.samplers[start,stop] = (
-				Categorical(trunc_probabilities)
+				CounterSampler(trunc_probabilities)
 			)
 
 		# Sample from the multinomial sampler for the context of this shape
@@ -108,6 +108,25 @@ class DataSetReaderIllegalStateException(Exception):
 	pass
 
 
+def default_parse(filename):
+	'''
+	Parses input corpus files into a file-format-independent in-memory
+	representation.  The output of this function is passed into
+	`build_examples` for any processing that is needed, irrespective of
+	file format, to generate examples form the stored data.
+
+	INPUTS
+	* filename [str]: path to a corpus file to be read
+
+	RETURNS
+	* [any]: file-format-independent representation of training data.
+	'''
+	tokenized_sentences = []
+	for line in open(filename):
+		tokenized_sentences.append(line.strip().split())
+	return tokenized_sentences
+
+
 class DatasetReader(object):
 
 	def __init__(
@@ -120,8 +139,10 @@ class DatasetReader(object):
 		num_processes=3,
 		unigram_dictionary=None,
 		kernel=[1,2,3,4,5,5,4,3,2,1],
+		load_dictionary_dir=None,
 		max_queue_size=0,
 		macrobatch_size=20000,
+		parse=default_parse,
 		verbose=True
 	):
 
@@ -132,18 +153,43 @@ class DatasetReader(object):
 		self.t = t
 		self.noise_ratio = noise_ratio
 		self.num_processes = num_processes
-		self.unigram_dictionary = unigram_dictionary
 		self.kernel = kernel
 		self.max_queue_size = max_queue_size
 		self.macrobatch_size = macrobatch_size
+		self._parse = parse
 		self.verbose = verbose
 
 		# If unigram dictionary not supplied, make one
-		if unigram_dictionary is None:
-			self.prepared = False
-			self.unigram_dictionary = UnigramDictionary()
+		self.unigram_dictionary = UnigramDictionary()
+
+		# But load dictionary from file if load_dictionary_dir specified.
+		if load_dictionary_dir is not None:
+			if verbose:
+				print 'Loading dictionary from %s...' % load_dictionary_dir
+			self.load_dictionary(load_dictionary_dir)
+
+		# Or, if an existing dictionary was passed in, use it
+		if unigram_dictionary is not None:
+			if verbose:
+				print 'A dictionary was supplied'
+			self.unigram_dictionary = unigram_dictionary
+
+		# Keep track fo whether the dictionary was loaded
+		self.prepared = False
+		if (
+			load_dictionary_dir is not None 
+			or unigram_dictionary is not None
+		):
+			self.prepared = True
 
 		self.data_loaded = False
+
+
+	def parse(self, filename):
+		'''
+		Delegate to the parse function given to the constructor.
+		'''
+		return self._parse(filename)
 
 
 	def check_access(self, save_dir):
@@ -441,25 +487,6 @@ class DatasetReader(object):
 			yield signal_macrobatch, noise_macrobatch
 
 
-	def parse(self, filename):
-		'''
-		Parses input corpus files into a file-format-independent in-memory
-		representation.  The output of this function is passed into
-		`build_examples` for any processing that is needed, irrespective of
-		file format, to generate examples form the stored data.
-
-		INPUTS
-		* filename [str]: path to a corpus file to be read
-
-		RETURNS
-		* [any]: file-format-independent representation of training data.
-		'''
-		tokenized_sentences = []
-		for line in open(filename):
-			tokenized_sentences.append(line.strip().split())
-		return tokenized_sentences
-
-
 	def get_vocab_size(self):
 		'''
 		Get the size of the vocabulary.  Only makes sense to call this
@@ -477,7 +504,7 @@ class DatasetReader(object):
 		return len(self.unigram_dictionary)
 
 
-	def load_dictionary(self, directory):
+	def load_dictionary(self, load_dir):
 		'''
 		Loads the unigram_dictionary from files stored in the supplied
 		directory.
@@ -491,7 +518,9 @@ class DatasetReader(object):
 		* [None]
 		'''
 		# Delegate to the underlying UnigramDictionary
-		self.unigram_dictionary.load(directory)
+		self.unigram_dictionary.load(os.path.join(
+			load_dir, 'dictionary'
+		))
 
 
 #	def save_data(self, directory):
@@ -537,12 +566,20 @@ class DatasetReader(object):
 #		return self.examples
 
 
-	def save_dictionary(self, directory):
+	def save_dictionary(self, save_dir):
 		'''
-		Save the unigram_dictionary to the given directory.
+		Save the unigram_dictionary in the subfolder 'dictionary' beneath
+		save_dir, in two files called 'counter-sampler.gz' and 
+		'token-map.gz'.  `save_dir` will be created if it doesn't exist.
 		'''
+		# Make save_dir if it doesn't exist
+		if not os.path.exists(save_dir):
+			os.mkdir(save_dir)
+
 		# Delegate to the underlying UnigramDictionary
-		self.unigram_dictionary.save(directory)
+		self.unigram_dictionary.save(os.path.join(
+			save_dir, 'dictionary'
+		))
 
 
 	def preparation(self, save_dir, min_frequency=None):

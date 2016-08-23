@@ -9,7 +9,7 @@ from lasagne.layers import (
 )
 from lasagne.init import Normal
 from lasagne.updates import nesterov_momentum
-from dataset_reader import DatasetReader
+from dataset_reader import DatasetReader, default_parse
 from theano_minibatcher import (
 	TheanoMinibatcher, NoiseContrastiveTheanoMinibatcher
 )
@@ -25,26 +25,42 @@ def sigmoid(tensor_var):
 
 
 def word2vec(
+
+		# Input / output options
 		files=[],
 		directories=[],
 		skip=[],
 		save_dir=None,
+		read_data_async=True,
+		num_processes=3,
+		max_queue_size=0,
+		parse=default_parse,
+
+		# Batching options
 		num_epochs=5,
+		batch_size = 1000,  # Number of *signal* examples per batch
+		macrobatch_size = 100000,
+
+		# Dictionary options
 		unigram_dictionary=None,
+		load_dictionary_dir=None,
+		min_frequency=10,
+
+		# Sampling options
 		noise_ratio=15,
 		kernel=[1,2,3,4,5,5,4,3,2,1],
 		t = 1.0e-5,
-		batch_size = 1000,  # Number of *signal* examples per batch
+
+		# Embedding options
 		num_embedding_dimensions=500,
 		word_embedding_init=Normal(),
 		context_embedding_init=Normal(),
+
+		# Learning rate options
 		learning_rate=0.1,
 		momentum=0.9,
-		num_processes=3,
-		load_dictionary_dir=None,
-		min_frequency=10,
-		macrobatch_size = 100000,
-		max_queue_size=0,
+
+		# Verbosity option
 		verbose=True
 	):
 
@@ -64,19 +80,19 @@ def word2vec(
 		files=files,
 		directories=directories,
 		skip=skip,
+		macrobatch_size=macrobatch_size,
+		max_queue_size=max_queue_size,
 		noise_ratio=noise_ratio,
-		t=t,
 		num_processes=num_processes,
 		unigram_dictionary=unigram_dictionary,
+		load_dictionary_dir=load_dictionary_dir,
+		t=t,
 		kernel=kernel,
-		max_queue_size=max_queue_size,
-		macrobatch_size=macrobatch_size,
+		parse=parse,
 		verbose=verbose
 	)
 
-
-	# Prepare the minibatch generator
-	# (this produces the counter_sampler stats)
+	# Prepare the dataset reader (this produces the counter_sampler stats)
 	if load_dictionary_dir is None and unigram_dictionary is None:
 		if verbose:
 			print 'preparing dictionaries...'
@@ -85,7 +101,7 @@ def word2vec(
 	# If min_frequency was specified, prune the dictionaries
 	if min_frequency is not None:
 		if verbose:
-			print 'prunning dictionaries...'
+			print 'pruning dictionary...'
 		reader.prune(min_frequency)
 
 	# Make a symbolic minibatcher
@@ -132,7 +148,11 @@ def word2vec(
 		if verbose:
 			print 'starting epoch %d' % epoch
 
-		macrobatches = reader.generate_dataset_serial()
+		if read_data_async:
+			macrobatches = reader.generate_dataset_parallel()
+		else:
+			macrobatches = reader.generate_dataset_serial()
+
 		macrobatch_num = 0
 		for signal_macrobatch, noise_macrobatch in macrobatches:
 

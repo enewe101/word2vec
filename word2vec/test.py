@@ -1431,7 +1431,6 @@ class TestWord2VecOnCorpus(TestCase):
 	corpus.
 	'''
 
-
 	def test_word2vec_on_corpus(self):
 
 		# Seed randomness to make the test reproducible
@@ -1439,7 +1438,7 @@ class TestWord2VecOnCorpus(TestCase):
 
 		word2vec_embedder, reader = word2vec(
 			files=['test-data/test-corpus/numbers-long.txt'],
-			num_epochs=2,
+			num_epochs=1,
 			batch_size=int(1e2),
 			macrobatch_size=int(1e5),
 			t=1,
@@ -1458,18 +1457,18 @@ class TestWord2VecOnCorpus(TestCase):
 		# which is high overall, so it turns up as a "good match" to any
 		# word
 		expected_tops = [
-			[0,2,3], # these contexts are good match to query 1
-			[0,1,3], # these contexts are good match to query 2
-			[0,1,2], # these contexts are good match to query 3
-			[0,5,6], # these contexts are good match to query 4
-			[0,4,6], # these contexts are good match to query 5
-			[0,4,5], # these contexts are good match to query 6
-			[0,8,9], # these contexts are good match to query 7
-			[0,7,9], # these contexts are good match to query 8
-			[0,7,8], # these contexts are good match to query 9
-			[0,11,12], # these contexts are good match to query 10
-			[0,10,12], # these contexts are good match to query 11
-			[0,10,11]  # these contexts are good match to query 12
+			[2,3], # these contexts are good match to query 1
+			[1,3], # these contexts are good match to query 2
+			[1,2], # these contexts are good match to query 3
+			[5,6], # these contexts are good match to query 4
+			[4,6], # these contexts are good match to query 5
+			[4,5], # these contexts are good match to query 6
+			[8,9], # these contexts are good match to query 7
+			[7,9], # these contexts are good match to query 8
+			[7,8], # these contexts are good match to query 9
+			[11,12], # these contexts are good match to query 10
+			[10,12], # these contexts are good match to query 11
+			[10,11]  # these contexts are good match to query 12
 		]
 
 		for i in range(1, 3*4+1):
@@ -1477,7 +1476,12 @@ class TestWord2VecOnCorpus(TestCase):
 				enumerate(dots[i]), key=lambda x: x[1], reverse=True
 			)[:3]
 			top3_positions = [t[0] for t in top3]
-			self.assertItemsEqual(top3_positions, expected_tops[i-1])
+
+			# both of the expected top matches should appear in the 
+			# top 3 (the UNK token might also be a good match, which
+			# is why we need to check the top 3, not just top 2).
+			self.assertTrue(expected_tops[i-1][0] in top3_positions)
+			self.assertTrue(expected_tops[i-1][1] in top3_positions)
 
 
 
