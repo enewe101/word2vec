@@ -1543,7 +1543,7 @@ class TestWord2Vec(TestCase):
 			batch_size=len(self.TEST_INPUT),
 			vocabulary_size=self.VOCAB_SIZE,
 			num_embedding_dimensions=self.NUM_EMBEDDING_DIMENSIONS,
-			word_embedding_init=self.QUERY_EMBEDDING,
+			query_embedding_init=self.QUERY_EMBEDDING,
 			context_embedding_init=self.CONTEXT_EMBEDDING
 		)
 		embedder.save(save_dir)
@@ -1698,7 +1698,7 @@ class TestWord2Vec(TestCase):
 			batch_size=len(self.TEST_INPUT),
 			vocabulary_size=self.VOCAB_SIZE,
 			num_embedding_dimensions=self.NUM_EMBEDDING_DIMENSIONS,
-			word_embedding_init=self.QUERY_EMBEDDING,
+			query_embedding_init=self.QUERY_EMBEDDING,
 			context_embedding_init=self.CONTEXT_EMBEDDING
 		)
 

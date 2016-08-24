@@ -61,7 +61,7 @@ def word2vec(
 
 		# Embedding options
 		num_embedding_dimensions=500,
-		word_embedding_init=None,
+		query_embedding_init=None,
 		context_embedding_init=None,
 
 		# Learning rate options
@@ -130,7 +130,7 @@ def word2vec(
 		batch_size=full_batch_size,
 		vocabulary_size=reader.get_vocab_size(),
 		num_embedding_dimensions=num_embedding_dimensions,
-		word_embedding_init=word_embedding_init,
+		query_embedding_init=query_embedding_init,
 		context_embedding_init=context_embedding_init
 	)
 
@@ -194,20 +194,32 @@ class Word2VecEmbedder(object):
 		input_var,
 		batch_size,
 		vocabulary_size=100000,
+		query_vocabulary_size=None,
+		context_vocabulary_size=None,
 		num_embedding_dimensions=500,
-		word_embedding_init=None,
+		query_embedding_init=None,
 		context_embedding_init=None,
 	):
 
-		if word_embedding_init is None:
-			word_embedding_init = Normal()
+		if query_embedding_init is None:
+			query_embedding_init = Normal()
 
 		if context_embedding_init is None:
 			context_embedding_init = Normal()
 
+		# If only vocabular_size is specified, then both 
+		# query_vocabulary_size and context_vocabulary_size take on that 
+		# value, but ppecific values given for query_ or 
+		# context_vocabulary_size override.
+		self.query_vocabulary_size = vocabulary_size
+		self.context_vocabulary_size = vocabulary_size
+		if query_vocabulary_size is not None:
+			self.query_vocabulary_size = query_vocabulary_size
+		if context_vocabulary_size is not None:
+			self.context_vocabulary_size = context_vocabulary_size
+
 		self.input_var = input_var
 		self.batch_size = batch_size
-		self.vocabulary_size = vocabulary_size
 		self.num_embedding_dimensions = num_embedding_dimensions
 		self._embed = None
 
@@ -229,13 +241,13 @@ class Word2VecEmbedder(object):
 		# Make separate embedding layers for query and context words
 		self.l_embed_query = lasagne.layers.EmbeddingLayer(
 			incoming=self.l_in_query,
-			input_size=vocabulary_size,
+			input_size=query_vocabulary_size,
 			output_size=num_embedding_dimensions,
-			W=word_embedding_init
+			W=query_embedding_init
 		)
 		self.l_embed_context = lasagne.layers.EmbeddingLayer(
 			incoming=self.l_in_context,
-			input_size=vocabulary_size,
+			input_size=context_vocabulary_size,
 			output_size=num_embedding_dimensions,
 			W=context_embedding_init
 		)
@@ -327,8 +339,8 @@ class Word2VecEmbedder(object):
 		'''returns a list of the trainable parameters, that is, the query
 		and context embeddings.  (similar to layer.get_all_params.)'''
 		return (
-			get_all_params(self.l_embed_query, trainable=True) +
-			get_all_params(self.l_embed_context, trainable=True)
+			self.l_embed_query.get_params(trainable=True) +
+			self.l_embed_context.get_params(trainable=True)
 		)
 
 
