@@ -555,7 +555,6 @@ class DatasetReader(object):
 		# Read through the corpus, building the UnigramDictionary
 		for filename in self.generate_filenames():
 			for tokens in self.parse(filename):
-				print tokens
 				self.unigram_dictionary.update(tokens)
 
 		# Prune the dictionary, if requested to do so.

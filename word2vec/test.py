@@ -1599,15 +1599,16 @@ class TestWord2Vec(TestCase):
 		vocab_size = 10
 		num_embedding_dimensions = 5
 
-		# Mock a symbolic minibatch (it's empty but will be filled in a moment)
+		# Mock a symbolic minibatch 
+		# (it's empty but will be filled in a moment)
 		symbolic_batch = shared(np.array([[]], dtype='int32'))
 
 		# Make a Word2VecEmbedder object, feed it the mocked batch
 		word2vec_embedder = Word2VecEmbedder(
-			symbolic_batch,
-			batch_size,
-			vocab_size,
-			num_embedding_dimensions,
+			input_var=symbolic_batch,
+			batch_size=batch_size,
+			vocabulary_size=vocab_size,
+			num_embedding_dimensions=num_embedding_dimensions
 		)
 
 		# Get the params and output from the word2vec embedder
@@ -1615,8 +1616,10 @@ class TestWord2Vec(TestCase):
 		params = word2vec_embedder.get_params()
 
 		# Define the loss function, and get parameter updates based on it
-		loss = get_noise_contrastive_loss(symbolic_output, num_signal_examples)
-		updates = nesterov_momentum(loss, params, learning_rate=0.1, momentum=0.9)
+		loss = get_noise_contrastive_loss(
+			symbolic_output, num_signal_examples)
+		updates = nesterov_momentum(
+			loss, params, learning_rate=0.1, momentum=0.9)
 
 		# Create the training function.  No inputs because the "inputs" are
 		# implemented as theano shared variables

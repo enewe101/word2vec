@@ -198,23 +198,26 @@ class Word2VecEmbedder(object):
 		context_vocabulary_size=None,
 		num_embedding_dimensions=500,
 		query_embedding_init=None,
-		context_embedding_init=None,
+		context_embedding_init=None
 	):
 
+		self.query_embedding_init = query_embedding_init
 		if query_embedding_init is None:
-			query_embedding_init = Normal()
+			self.query_embedding_init = Normal()
 
+		self.context_embedding_init = context_embedding_init
 		if context_embedding_init is None:
-			context_embedding_init = Normal()
+			self.context_embedding_init = Normal()
 
 		# If only vocabular_size is specified, then both 
 		# query_vocabulary_size and context_vocabulary_size take on that 
 		# value, but ppecific values given for query_ or 
 		# context_vocabulary_size override.
 		self.query_vocabulary_size = vocabulary_size
-		self.context_vocabulary_size = vocabulary_size
 		if query_vocabulary_size is not None:
 			self.query_vocabulary_size = query_vocabulary_size
+
+		self.context_vocabulary_size = vocabulary_size
 		if context_vocabulary_size is not None:
 			self.context_vocabulary_size = context_vocabulary_size
 
@@ -232,24 +235,24 @@ class Word2VecEmbedder(object):
 
 		# Make separate input layers for query and context words
 		self.l_in_query = lasagne.layers.InputLayer(
-			shape=(batch_size,), input_var=self.query_input
+			shape=(self.batch_size,), input_var=self.query_input
 		)
 		self.l_in_context = lasagne.layers.InputLayer(
-			shape=(batch_size,), input_var=self.context_input
+			shape=(self.batch_size,), input_var=self.context_input
 		)
 
 		# Make separate embedding layers for query and context words
 		self.l_embed_query = lasagne.layers.EmbeddingLayer(
 			incoming=self.l_in_query,
-			input_size=query_vocabulary_size,
-			output_size=num_embedding_dimensions,
-			W=query_embedding_init
+			input_size=self.query_vocabulary_size,
+			output_size=self.num_embedding_dimensions,
+			W=self.query_embedding_init
 		)
 		self.l_embed_context = lasagne.layers.EmbeddingLayer(
 			incoming=self.l_in_context,
-			input_size=context_vocabulary_size,
-			output_size=num_embedding_dimensions,
-			W=context_embedding_init
+			input_size=self.context_vocabulary_size,
+			output_size=self.num_embedding_dimensions,
+			W=self.context_embedding_init
 		)
 
 		# Obtain the embedded query words and context words
