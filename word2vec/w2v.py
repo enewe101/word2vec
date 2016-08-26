@@ -320,7 +320,7 @@ class Word2VecEmbedder(object):
 		)
 		l_emb = lasagne.layers.EmbeddingLayer(
 			incoming=l_in,
-			input_size=self.vocabulary_size,
+			input_size=self.query_vocabulary_size,
 			output_size=self.num_embedding_dimensions,
 			W=self.l_embed_query.W
 		)
