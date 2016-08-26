@@ -148,7 +148,7 @@ class DatasetReader(object):
 		# Register parameters to instance namespace
 		self.files = files
 		self.directories = directories
-		self.skip = skip
+		self.skip = [re.compile(s) for s in skip]
 		self.t = t
 		self.noise_ratio = noise_ratio
 		self.num_processes = num_processes
@@ -159,6 +159,7 @@ class DatasetReader(object):
 		self.verbose = verbose
 
 		# If unigram dictionary not supplied, make one
+		self.prepared = False
 		self.unigram_dictionary = UnigramDictionary()
 
 		# But load dictionary from file if load_dictionary_dir specified.
@@ -172,16 +173,7 @@ class DatasetReader(object):
 			if verbose:
 				print 'A dictionary was supplied'
 			self.unigram_dictionary = unigram_dictionary
-
-		# Keep track fo whether the dictionary was loaded
-		self.prepared = False
-		if (
-			load_dictionary_dir is not None 
-			or unigram_dictionary is not None
-		):
-			self.prepared = True
-
-		self.data_loaded = False
+			self.prepare = True
 
 
 	def parse(self, filename):
@@ -490,48 +482,9 @@ class DatasetReader(object):
 			load_dir, 'dictionary'
 		))
 
-
-#	def save_data(self, directory):
-#		'''
-#		Save the generated dataset to the given directory.
-#		'''
-#
-#		if not self.data_loaded:
-#			raise DataSetReaderIllegalStateException(
-#				'DatasetReader: cannot save the dataset before any data has '
-#				'been generated.'
-#			)
-#
-#		save_dir = os.path.join(compiled_dataset_dir, 'examples')
-#		if not os.path.exists(save_dir):
-#			os.mkdir(save_dir)
-#
-#		path = os.path.join(save_dir, '0.npz')
-#		np.savez(path, data=self.examples)
-
-
-#	MATCH_EXAMPLE_STORE = re.compile(r'[0-9]+\.npz')
-#	def load_data(self, compiled_dataset_dir):
-#		'''
-#		Load the dataset from the given directory
-#		'''
-#		examples_dir = os.path.join(compiled_dataset_dir, 'examples')
-#		fnames = check_output(['ls %s' % examples_dir], shell=True).split()
-#		macrobatches = []
-#		for fname in fnames:
-#			if not self.MATCH_EXAMPLE_STORE.match(fname):
-#				continue
-#			f = np.load(os.path.join(examples_dir, fname))
-#			macrobatches.append(f['data'].astype('int32'))
-#
-#		if len(macrobatches) < 1:
-#			raise IOError(
-#				'DatasetReader: no example data files found in %s.' % examples_dir
-#			)
-#
-#		self.examples = np.concatenate(macrobatches)
-#		self.data_loaded = True
-#		return self.examples
+		# It is now possible to call the data generators
+		# `generate_dataset_serial()` and `generate_dataset_parallel()`
+		self.prepared = True
 
 
 	def save_dictionary(self, save_dir):

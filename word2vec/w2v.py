@@ -180,6 +180,7 @@ def word2vec(
 	# Save the model (the embeddings) if save_dir was provided
 	if save_dir is not None:
 		embedder.save(save_dir)
+		reader.save_dictionary(save_dir)
 
 	# Return the trained embedder and the dictionary mapping tokens
 	# to ids
