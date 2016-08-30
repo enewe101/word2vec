@@ -176,6 +176,18 @@ class DatasetReader(object):
 			self.prepare = True
 
 
+	def is_prepared(self):
+		'''
+		Checks to see whether the dataset reader is ready to generate data.
+		Given the simplicity, and that the logic of deciding when 
+		self.prepared is True is found elsewhere, this method may seem
+		unnecessary.  However, it provides a hook for more complex checking
+		in subclasses.
+		'''
+		if self.prepared:
+			return True
+
+
 	def parse(self, filename):
 		'''
 		Delegate to the parse function given to the constructor.
@@ -353,7 +365,7 @@ class DatasetReader(object):
 
 		# This cannot be called before calling prepare(), unless a prepared
 		# UnigramDictionary was passed to the self's constructor
-		if not self.prepared:
+		if not self.is_prepared():
 			raise DataSetReaderIllegalStateException(
 				"DatasetReader: generate_examples() cannot be called "
 				"before prepare() is called unless a prepared "
@@ -388,7 +400,7 @@ class DatasetReader(object):
 		# This cannot be called before calling prepare(), unless a prepared
 		# UnigramDictionary was passed to the self's constructor
 
-		if not self.prepared:
+		if not self.is_prepared():
 			raise DataSetReaderIllegalStateException(
 				"DatasetReader: generate_examples() cannot be called "
 				"before prepare() is called unless a prepared "
