@@ -40,6 +40,43 @@ class TestUnigramDictionary(TestCase):
 	}
 	CORPUS = list(Counter(FREQUENCIES).elements())
 
+	def test_sort(self):
+		np.random.seed(1)
+		np.random.shuffle(self.CORPUS)
+		unigram_dictionary = UnigramDictionary()
+		unigram_dictionary.update(self.CORPUS)
+
+		ordered_tokens = ['UNK'] + [
+			token for token, count 
+			in Counter(self.FREQUENCIES).most_common()
+		]
+		ordered_counts = [0] + [
+			count for token, count 
+			in Counter(self.FREQUENCIES).most_common()
+		]
+
+		self.assertNotEqual(
+			unigram_dictionary.token_map.tokens,
+			ordered_tokens
+		)
+		self.assertNotEqual(
+			unigram_dictionary.counter_sampler.counts,
+			ordered_counts
+		)
+
+		unigram_dictionary.sort()
+		
+		self.assertEqual(
+			unigram_dictionary.token_map.tokens,
+			ordered_tokens
+		)
+		self.assertEqual(
+			unigram_dictionary.counter_sampler.counts,
+			ordered_counts
+		)
+
+		
+
 
 	def test_remove_compact(self):
 		unigram_dictionary = UnigramDictionary()

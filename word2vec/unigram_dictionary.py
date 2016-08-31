@@ -33,6 +33,30 @@ class UnigramDictionary(object):
 			self.counter_sampler = CounterSampler()
 
 
+	def sort(self):
+		unk_count = self.counter_sampler.counts[0]
+
+		# Get the counts and tokens (skipping the first UNK entry)
+		# They are parallel arrays (ith count corresponds to ith token)
+		counts = self.counter_sampler.counts[1:]
+		tokens = self.token_map.tokens[1:]
+
+		# Zip them together and sort by counts
+		token_counts = zip(counts, tokens)
+		token_counts.sort(reverse=True)
+
+		# Separate them again
+		new_counts = [unk_count]
+		new_tokens = ['UNK']
+		for count, token in token_counts:
+			new_counts.append(count)
+			new_tokens.append(token)
+
+		# Rebuild the token_map and counter_sampler on the sorted arrays
+		self.token_map = TokenMap(on_unk=self.on_unk, tokens=new_tokens)
+		self.counter_sampler = CounterSampler(counts=new_counts)
+
+
 	def remove(self, token):
 		idx = self.get_id(token)
 		self.token_map.remove(token)
