@@ -59,6 +59,25 @@ class TokenMap(object):
 			self.tokens = tokens
 
 
+	def compact(self):
+		'''
+		Recreate the tokens list and mapping such that `None`s are 
+		removed (which are holes left by calls to `remove()`.
+		'''
+		self.tokens = [t for t in self.tokens if t is not None]
+		self.map = dict((t, idx) for idx, t in enumerate(self.tokens))
+
+
+	def remove(self, token):
+		idx = self.get_id(token)
+		if idx == UNK:
+			raise ValueError(
+				'Cannot remove token %s because it does not ' 
+				'exist or is reserved.' % str(token)
+			)
+		self.tokens[idx] = None
+
+
 	def add(self, token):
 		try:
 			return self.map[token]

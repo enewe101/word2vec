@@ -107,7 +107,7 @@ class DataSetReaderIllegalStateException(Exception):
 	pass
 
 
-def default_parse(filename):
+def default_parse(filename, verbose=True):
 	'''
 	Parses input corpus files into a file-format-independent in-memory
 	representation.  The output of this function is passed into
@@ -137,6 +137,7 @@ class DatasetReader(object):
 		t=1e-5,
 		num_processes=3,
 		unigram_dictionary=None,
+		min_frequency=0,
 		kernel=[1,2,3,4,5,5,4,3,2,1],
 		load_dictionary_dir=None,
 		max_queue_size=0,
@@ -157,6 +158,7 @@ class DatasetReader(object):
 		self.macrobatch_size = macrobatch_size
 		self._parse = parse
 		self.verbose = verbose
+		self.min_frequency = min_frequency
 
 		# If unigram dictionary not supplied, make one
 		self.prepared = False
@@ -173,6 +175,7 @@ class DatasetReader(object):
 			if verbose:
 				print 'A dictionary was supplied'
 			self.unigram_dictionary = unigram_dictionary
+			self.prune()
 			self.prepare = True
 
 
@@ -184,15 +187,17 @@ class DatasetReader(object):
 		unnecessary.  However, it provides a hook for more complex checking
 		in subclasses.
 		'''
+
 		if self.prepared:
 			return True
+		return False
 
 
 	def parse(self, filename):
 		'''
 		Delegate to the parse function given to the constructor.
 		'''
-		return self._parse(filename)
+		return self._parse(filename, self.verbose)
 
 
 	def check_access(self, save_dir):
@@ -493,6 +498,7 @@ class DatasetReader(object):
 		self.unigram_dictionary.load(os.path.join(
 			load_dir, 'dictionary'
 		))
+		self.prune()
 
 		# It is now possible to call the data generators
 		# `generate_dataset_serial()` and `generate_dataset_parallel()`
@@ -522,9 +528,7 @@ class DatasetReader(object):
 			for tokens in self.parse(filename):
 				self.unigram_dictionary.update(tokens)
 
-		# Prune the dictionary, if requested to do so.
-		if min_frequency is not None:
-			self.unigram_dictionary.prune(min_frequency)
+		self.prepared = True
 
 
 	def prepare(self, save_dir=None, *args, **kwargs):
@@ -563,14 +567,21 @@ class DatasetReader(object):
 		if save_dir is not None:
 			self.save_dictionary(save_dir)
 
-		self.prepared = True
+		# Prune the dictionary
+		self.prune()
 
 
-	def prune(self, min_frequency=5):
+
+	def prune(self):
 		'''
 		Exposes the prune function for the underlying UnigramDictionary
 		'''
-		self.unigram_dictionary.prune(min_frequency)
+		if self.verbose:
+			print (
+				'pruning dictionary to eliminate tokens occuring less than '
+				'%d times.' % self.min_frequency
+			)
+		self.unigram_dictionary.prune(self.min_frequency)
 
 
 	def generate_examples(self, filename_iterator):

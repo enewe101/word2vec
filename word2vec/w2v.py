@@ -94,6 +94,7 @@ def word2vec(
 		num_processes=num_processes,
 		unigram_dictionary=unigram_dictionary,
 		load_dictionary_dir=load_dictionary_dir,
+		min_frequency=min_frequency,
 		t=t,
 		kernel=kernel,
 		parse=parse,
@@ -101,16 +102,10 @@ def word2vec(
 	)
 
 	# Prepare the dataset reader (this produces the counter_sampler stats)
-	if load_dictionary_dir is None and unigram_dictionary is None:
+	if not reader.is_prepared():
 		if verbose:
 			print 'preparing dictionaries...'
 		reader.prepare(save_dir=save_dir)
-
-	# If min_frequency was specified, prune the dictionaries
-	if min_frequency is not None:
-		if verbose:
-			print 'pruning dictionary...'
-		reader.prune(min_frequency)
 
 	# Make a symbolic minibatcher
 	minibatcher = NoiseContrastiveTheanoMinibatcher(

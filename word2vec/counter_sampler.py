@@ -35,6 +35,20 @@ class CounterSampler(object):
 		self.sampler_ready = False
 
 
+	def remove(self, idx):
+		displaced_count = self.counts[idx]
+		self.counts[idx] = None
+		self.sampler_ready = False
+
+
+	def compact(self):
+		'''
+		Remake the conts list, eliminating `None`s which are holes
+		left by calls to `remvoe()`.
+		'''
+		self.counts = [c for c in self.counts if c is not None]
+
+
 	def add(self, idx):
 		self.sampler_ready = False
 		if len(self.counts) <= idx:

@@ -17,6 +17,7 @@ from lasagne.updates import nesterov_momentum
 import re
 import os
 import shutil
+from copy import deepcopy
 
 
 def sigma(a):
@@ -40,15 +41,47 @@ class TestUnigramDictionary(TestCase):
 	CORPUS = list(Counter(FREQUENCIES).elements())
 
 
-	# TODO test that we actually produce the samples according to the
-	# frequency distribution of the corpus
+	def test_remove_compact(self):
+		unigram_dictionary = UnigramDictionary()
+		unigram_dictionary.update(self.CORPUS)
+		unigram_dictionary.remove('banana')
+		unigram_dictionary.remove('pineapple')
+		unigram_dictionary.compact()
+		
+		adjusted_frequencies = deepcopy(self.FREQUENCIES)
+		adjusted_frequencies['banana'] = 0
+		adjusted_frequencies['pineapple'] = 0
+		total = sum(adjusted_frequencies.values())
+		reduced_tokens = [
+			key for key, val in self.FREQUENCIES.iteritems()
+			if val > 0
+		]
+
+		for token in reduced_tokens:
+			expected_probability = (
+				adjusted_frequencies[token] / float(total))
+			idx = unigram_dictionary.get_id(token)
+			self.assertEqual(
+				unigram_dictionary.get_probability(idx), 
+				expected_probability
+			)
+
+		# Attempting to remove tokens that don't exist is an error
+		with self.assertRaises(ValueError):
+			unigram_dictionary.remove('fake')
+
+		# Attempting to remove the 'UNK' special token is an error
+		with self.assertRaises(ValueError):
+			unigram_dictionary.remove('UNK')
+
+
 	def test_sampling(self):
 		'''
 		Test basic function of assigning counts, and then sampling from
 		The distribution implied by those counts.
 		'''
 		unigram_dictionary = UnigramDictionary()
-		unigram_dictionary.update(self.FREQUENCIES)
+		unigram_dictionary.update(self.CORPUS)
 
 		# Test asking for a single sample (where no shape tuple supplied)
 		single_sample = unigram_dictionary.sample()
@@ -266,7 +299,6 @@ class TestUnigramDictionary(TestCase):
 				self.assertEqual(freq, unk_freq)
 			else:
 				self.assertEqual(freq, self.FREQUENCIES[token])
-
 
 
 class TestTokenChooser(TestCase):
@@ -870,6 +902,71 @@ class TestDataReader(TestCase):
 		)
 
 
+	def test_prune(self):
+		save_dir = 'test-data/test-dataset-reader'
+		if os.path.exists(save_dir):
+			shutil.rmtree(save_dir)
+
+		files = [
+			'test-data/test-corpus/003.tsv',
+			'test-data/test-corpus/004.tsv'
+		]
+
+		# First make a dataset reader with no min frequency
+		reader = DatasetReader(
+			files=files,
+			min_frequency=0,
+			verbose=False
+		)
+		reader.prepare(save_dir=save_dir)
+
+		# There should be 303 tokens in the dictionary
+		self.assertEqual(reader.get_vocab_size(), 303)
+
+		# Now make a dataset reader with a min frequency of 10
+		reader = DatasetReader(
+			files=files,
+			min_frequency=10,
+			verbose=False
+		)
+		reader.prepare()
+
+		# There should be only 7 tokens in dictionary (others got pruned)
+		self.assertEqual(reader.get_vocab_size(), 7)
+
+		# Now try making a dataset reader and loading from file,
+		# again enforcing the in frequency
+		reader = DatasetReader(
+			files=files,
+			min_frequency=10,
+			load_dictionary_dir=save_dir,
+			verbose=False
+		)
+		self.assertEqual(reader.get_vocab_size(), 7)
+
+		# Now try making a dataset reader and loading the dictionary
+		# manually
+		reader = DatasetReader(
+			files=files,
+			min_frequency=10,
+			verbose=False
+		)
+		reader.load_dictionary(save_dir)
+		self.assertEqual(reader.get_vocab_size(), 7)
+
+		# Now try passing the dictionary into the DatasetReader
+		dictionary = UnigramDictionary()
+		dictionary.load(os.path.join(save_dir, 'dictionary'))
+		reader = DatasetReader(
+			files=files,
+			min_frequency=10,
+			unigram_dictionary=dictionary,
+			verbose=False
+		)
+		self.assertEqual(reader.get_vocab_size(), 7)
+
+
+
 	def test_illegal_state_exception(self):
 		'''
 		Calling generate_dataset_parallel() on a DatasetReader before 
@@ -1431,6 +1528,38 @@ class TestWord2VecOnCorpus(TestCase):
 	corpus.
 	'''
 
+	def test_word2vec_does_pruning(self):
+
+		files = [
+			'test-data/test-corpus/003.tsv',
+			'test-data/test-corpus/004.tsv'
+		]
+
+		word2vec_embedder, reader = word2vec(
+			files=files,
+			min_frequency=0,
+			num_epochs=1,
+			batch_size=int(1e2),
+			macrobatch_size=int(1e5),
+			t=1,
+			num_embedding_dimensions=5,
+			verbose=False
+		)
+		self.assertEqual(reader.get_vocab_size(), 303)
+
+		word2vec_embedder, reader = word2vec(
+			files=files,
+			min_frequency=10,
+			num_epochs=1,
+			batch_size=int(1e2),
+			macrobatch_size=int(1e5),
+			t=1,
+			num_embedding_dimensions=5,
+			verbose=False
+		)
+		self.assertEqual(reader.get_vocab_size(), 7)
+
+
 	def test_word2vec_on_corpus(self):
 
 		# Seed randomness to make the test reproducible
@@ -1523,7 +1652,7 @@ class TestWord2Vec(TestCase):
 
 
 
-	def test_save_load_dictionary(self):
+	def test_save_load_embedding(self):
 		'''
 		Test that save and load actually write and read the 
 		Word2VecEmbedder's parameters, by testing that a saved and then 

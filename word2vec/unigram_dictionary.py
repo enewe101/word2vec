@@ -6,7 +6,7 @@ unigram distribution.
 '''
 
 import os
-from token_map import TokenMap, SILENT, ERROR, UNK
+from token_map import TokenMap, SILENT, WARN, ERROR, UNK
 from counter_sampler import CounterSampler
 
 class UnigramDictionary(object):
@@ -17,7 +17,7 @@ class UnigramDictionary(object):
 	'''
 
 
-	def __init__(self, on_unk=SILENT, token_map=None, counter_sampler=None):
+	def __init__(self, on_unk=WARN, token_map=None, counter_sampler=None):
 		'''
 		Create a new UnigramDictionary.  Typical usage provides no
 		arguments, but a token_map and counter_sampler can be provided
@@ -31,6 +31,17 @@ class UnigramDictionary(object):
 		self.counter_sampler = counter_sampler
 		if counter_sampler is None:
 			self.counter_sampler = CounterSampler()
+
+
+	def remove(self, token):
+		idx = self.get_id(token)
+		self.token_map.remove(token)
+		self.counter_sampler.remove(idx)
+
+
+	def compact(self):
+		self.token_map.compact()
+		self.counter_sampler.compact()
 
 
 	def prune(self, min_frequency=5):
