@@ -49,14 +49,30 @@ class CounterSampler(object):
 		self.counts = [c for c in self.counts if c is not None]
 
 
-	def add(self, idx):
-		self.sampler_ready = False
+	def pad_if_necessary(self, idx):
 		if len(self.counts) <= idx:
 			add_zeros = [0] * (idx +1 - len(self.counts))
 			self.counts.extend(add_zeros)
 
+
+
+	def add(self, idx):
+		'''
+		Increment the count for `idx` by 1.
+		'''
+		self.sampler_ready = False
+		self.pad_if_necessary(idx)
 		self.counts[idx] += 1
 
+
+	def add_count(self, idx, count):
+		'''
+		Like `self.add()`, but increment the count for `idx` by `count`
+		rather than just 1
+		'''
+		self.sampler_ready = False
+		self.pad_if_necessary(idx)
+		self.counts[idx] += count
 
 	def update(self, idxs):
 		for idx in idxs:

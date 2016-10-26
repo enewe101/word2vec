@@ -40,6 +40,24 @@ class TestUnigramDictionary(TestCase):
 	}
 	CORPUS = list(Counter(FREQUENCIES).elements())
 
+
+	def test_add(self):
+		unigram_dictionary1 = UnigramDictionary()
+		unigram_dictionary1.update_counts(self.FREQUENCIES.iteritems())
+
+		frequencies2 = {'apple':5, 'grapes':3, 'grapefruit':-1}
+		unigram_dictionary2 = UnigramDictionary()
+		unigram_dictionary2.update_counts(frequencies2.iteritems())
+
+		totals = Counter(self.FREQUENCIES) + Counter(frequencies2)
+		unigram_dictionary1.add_dictionary(unigram_dictionary2)
+		for token in totals:
+			self.assertEqual(
+				totals[token], 
+				unigram_dictionary1.get_token_frequency(token)
+			)
+
+
 	def test_sort(self):
 		np.random.seed(1)
 		np.random.shuffle(self.CORPUS)

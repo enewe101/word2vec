@@ -115,6 +115,17 @@ class UnigramDictionary(object):
 		return token_id
 
 
+	def add_count(self, token, count):
+		'''
+		Add `count` to the counts for `token`, making a new entry if 
+		necessary.
+		'''
+		# Get or create an id for this token
+		token_id = self.token_map.add(token)
+		# Increment the frequency count
+		self.counter_sampler.add_count(token_id, count)
+
+
 	def get_vocab_size(self):
 		'''
 		Return the number of unique tokens in the token_map.
@@ -138,7 +149,32 @@ class UnigramDictionary(object):
 
 
 	def update(self, token_iterable):
+		'''
+		Like `add`, but accepts an iterable of tokens, incrementing the
+		count for each of them.
+		'''
 		return [self.add(token) for token in token_iterable]
+
+
+	def add_dictionary(self, other):
+		'''
+		Adds counts from another UnigramDictionary, `other`, to `self`'s
+		counts, i.e. adding in place.
+		'''
+		self.update_counts(other.get_frequency_list())
+
+
+	def update_counts(self, token_counts_iterable):
+		'''
+		Like `add_count` but accepts an iterable of (token,count) pairs,
+		and increments the count for each token by the count given.
+		Expected usage is to have a dictionary with tokens as keys
+		and counts as values, and pass in your_dict.iteritems().
+		'''
+		return [
+			self.add_count(token, count) 
+			for token, count in token_counts_iterable
+		]
 
 
 	def get_id(self, token):
@@ -221,6 +257,32 @@ class UnigramDictionary(object):
 			os.path.join(loaddir, 'counter-sampler.gz'))
 
 
+	def get_token_list(self):
+		'''
+		Gets an iterable of tokens currently in the dictionary.  Omits
+		The 'UNK' token.
+		'''
+		return (
+			token for token in self.token_map.tokens if token is not 'UNK'
+		)
+
+
+	def get_frequency_list(self):
+		'''
+		Gets an iterable of (token, count) tuples.
+		'''
+
+		# Handle the case where there are no counts at all yet
+		if len(self.counter_sampler.counts) == 0:
+			return []
+
+		# Otherwise get the counts normally
+		return (
+			(token, self.get_frequency(self.get_id(token)))
+			for token in self.token_map.tokens
+		)
+
+
 	def sample(self, shape=None):
 		'''
 		Draw a sample according to the counter_sampler probability
@@ -237,9 +299,21 @@ class UnigramDictionary(object):
 		return self.counter_sampler.get_probability(token_id)
 
 
+	def get_token_frequency(self, token):
+		'''
+		Return the frequency (count) associated to the token
+		'''
+		token_id = self.get_id(token)
+		# If the token is unknown, return 0
+		if token_id == UNK:
+			return 0
+		return self.get_frequency(token_id)
+
+
 	def get_frequency(self, token_id):
 		'''
 		Return the frequency associated to token_id.
 		'''
 		# Delegate to the underlying CounterSampler
 		return self.counter_sampler.get_frequency(token_id)
+
