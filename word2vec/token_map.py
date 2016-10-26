@@ -11,6 +11,15 @@ WARN = 1
 ERROR = 2
 UNK = 0
 
+def ensure_str(s):
+	'''
+	Ensures that the string is encoded as str, not unicode
+	'''
+	try:
+		return s.encode('utf8')
+	except UnicodeEncodeError:
+		return s
+
 
 # TODO: enable loading and saving
 class TokenMap(object):
@@ -55,8 +64,8 @@ class TokenMap(object):
 					'unknown tokens.'
 				)
 
-			self.map = dict((t, idx) for idx, t in enumerate(tokens))
-			self.tokens = tokens
+			self.tokens = [ensure_str(t) for t in tokens]
+			self.map = dict((t, idx) for idx, t in enumerate(self.tokens))
 
 
 	def compact(self):
@@ -69,6 +78,7 @@ class TokenMap(object):
 
 
 	def remove(self, token):
+		token = ensure_str(token)
 		idx = self.get_id(token)
 		if idx == UNK:
 			raise ValueError(
@@ -79,6 +89,7 @@ class TokenMap(object):
 
 
 	def add(self, token):
+		token = ensure_str(token)
 		try:
 			return self.map[token]
 		except KeyError:
@@ -86,6 +97,7 @@ class TokenMap(object):
 			self.map[token] = next_id
 			self.tokens.append(token)
 			return next_id
+
 
 	def get_vocab_size(self):
 		return len(self.tokens)
@@ -96,6 +108,7 @@ class TokenMap(object):
 
 
 	def get_id(self, token):
+		token = ensure_str(token)
 		try:
 			return self.map[token]
 
