@@ -17,7 +17,7 @@ def ensure_str(s):
 	'''
 	try:
 		return s.encode('utf8')
-	except UnicodeEncodeError:
+	except UnicodeDecodeError:
 		return s
 
 
