@@ -1,5 +1,5 @@
 # theano-word2vec
-An implementation of Mikolov's word2vec in Python using Theano and Lasagne.
+An implementation of Mikolov's word2vec in Python 2 using Theano and Lasagne.
 
 ## About this package
 This package has been written with care for modularity of it's components, 
@@ -9,6 +9,7 @@ customization and extension, as well as a tour of how the package is setup.
 For now, please enjoy this quickstart guide
 
 ## Quickstart
+*NOTE: This package is only available for Python 2 right now.*
 
 ### Install
 Install from the Python Package Index:
